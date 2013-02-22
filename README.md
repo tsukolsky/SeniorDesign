@@ -1,0 +1,1 @@
+This folder contains AVR code (RTC is the watchdog AVR code), as well as other miscellanious (spelling??) things, for the Senior Design project Re.Cycle at Boston University. For more information contact BU Electrical and Computer Engineering, or www.bu.edu.
