@@ -2,7 +2,7 @@
 | HR_TEST.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/20/2013
-| Last Revised: 2/20/13
+| Last Revised: 2/26/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: The point of this module is to test the Pulse HR Sensor with the
@@ -10,9 +10,15 @@
 |--------------------------------------------------------------------------------
 | Revisions: (1) Need to move this into a Flag oriented procedure. After initial testing
 |				 I will. Then step is to integrate with existing GAVR code.
+|	     2/26: Got Speed Sensor working. Working on HR.
+|	
 |================================================================================
-| *NOTES:
+| *NOTES: (1) 87.96" distance travelled on normal 28" bicycle wheel speed = distance/time; 
+|             87.96" = .0013882576 miles 20mph/distance=14406= 1/time => time=249.88ms; 
+|             Timer two because 8MHz/256=31.25kHz clock => .032ms per tick.
+|
 \*******************************************************************************/
+
 using namespace std;
 
 #include <inttypes.h>
@@ -43,7 +49,7 @@ using namespace std;
 
 void DeviceInit();
 void AppInit(unsigned int ubrr);
-int GetADC();
+WORD GetADC();
 void Wait_ms(int delay);
 void PutUart0Ch(char ch);
 void Print0(char string[]);
@@ -137,7 +143,7 @@ ISR(TIMER2_COMPA_vect){
 		if ((signal > thresh) && !pulse && (N>((IBI/5)*3))){	//send pulse high
 			pulse=fTrue;
 			prtLED |= (1 << bnLED);		//turn LED on
-			IBI=sampleCounter-lastBeatTime;
+			IBI=N;
 			lastBeatTime=sampleCounter;
 		}
 	
@@ -164,6 +170,7 @@ ISR(TIMER2_COMPA_vect){
 		runningTotal/=10;			//time it took all of them in milliseconds
 		BPM=60000/runningTotal;		//60 seconds in minute, 1000ms in second
 		QS=fTrue;
+		lastBeatTime=sampleCounter;
 	}//end if N>250
 		
 	//No pulse after last interrupt/pulse, send signal low again, reset things.
@@ -194,9 +201,7 @@ int main(void){
 	AppInit(MYUBRR);
 	Print0("Hello...");
 	while (fTrue){
-		//while(flagSampleADC
-		int sample=GetADC();
-		Wait_ms(100);
+
 		if (QS){
 			//Print0("Processing...");
 			QS=fFalse;
@@ -231,11 +236,7 @@ int main(void){
 			Print0("Speed:");
 			Print0(tempString);
 			flagCalcSpeed=fFalse;
-		}
-		
-		//Needs external oscillator.
-		//SMCR = (1 << SE);	//enable the idle
-		//asm volatile("SLEEP");	//goes into idle state. wakes up on compare		
+		}	
 	}
 	
 }
@@ -257,52 +258,52 @@ void AppInit(unsigned int ubrr){
 	UBRR0L = ubrr;
 	UBRR0H |= (ubrr >> 8);
 	UCSR0B = (1 << TXEN0)|(1 << RXEN0);		//Enable TX0 and RX0
-	UCSR0C = (1 << UCSZ01)|(1 << UCSZ00);	//Async, 8 data bits no parity
+	UCSR0C = (1 << UCSZ01)|(1 << UCSZ00);		//Async, 8 data bits no parity
 	
 	//Disable power to certain modules
-	PRR |= (1 << PRTWI)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0) and TIM2
+	PRR |= (1 << PRTWI)|(1 << PRTIM0)|(1 << PRSPI);  //Turn off everything 
+
+	ADCSRA |= (1 << ADEN);				//enable ADC
+	ADMUX |= (1 << REFS0)|(1 << MUX1);		//internal 3.3V reference on AVCC, channel ADC2
 
 	//Initialize timer 2, counter compare on TCNTA compare equals
 	TCCR2A = (1 << WGM21);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
-	TCCR2B = (1 << CS22)|(1 << CS20);	//clk/128
-	OCR2A = 0x7c;		//124
+	TCCR2B = (1 << CS22)|(1 << CS20);		//clk/128
+	OCR2A = 0x7c;					//124
+	TCNT2 = 0x00;					//Initialize
 	//TIMSK2 = (1 << OCIE2A);				//enable OCIE2A
 	
-	//Initialize Timre 1, counter is read on an interrupt to measure speed. assumes rider is going  above a certain speed for initial test.
-	/*TCCR1B |= (1 << CS12); //Prescaler of 256 for system clock
-	TIFR1= (1 << TOV2);
-	TIMSK1=(1 << TOIE2);
-	TCNT1=0;*/
+	//Initialize Timer 1(16-bit), counter is read on an interrupt to measure speed. assumes rider is going  above a certain speed for initial test.
+	TCCR1B |= (1 << CS12); 				//Prescaler of 256 for system clock
+	TIFR1= (1 << TOV2);				//Make sure the overflow flag is not already set
+	TCNT1 = 0x00;
+	//TIMSK1=(1 << TOIE2);
+
 	
 	//Enable SPeed interrupt
 	EICRA = (1 << ISC01)|(1 << ISC00);
 	//EIMSK = (1 << INT0);
 	
-	//87.96" distance travelled on normal 28" bicycle wheel
-	//speed = distance/time; 87.96" = .0013882576 miles
-	//20mph/distance=14406= 1/time => time=249.88ms; therefore, have the thing divide by 2343.75 for a good number. If 1MHz clock, could divide by 512 and get somewhat close. 
 	//Setup LED Blinking Port
 	ddrLED |= (1 << bnLED)|(1 << bnSPEEDLED);
 	prtLED &= ~((1 << bnSPEEDLED)|(1 << bnLED));	//off initially.
 	
 	//Enable Global Interrupts. 
 	sei();	
-	
 }
 
 /*************************************************************************************************************/
 
-int GetADC(){
-	//Pruple wire connected to ADC0
-	static int times=0;
+WORD GetADC(){
+	//Disable global interrupts; declare variables.
 	cli();
+	static int times=0;
 	volatile WORD ADCreading=0;
-	PRR &= ~(1 << PRADC);	//give power back to adc
-	ADMUX |= (1 << REFS0)|(1 << MUX1);	//internal 3.3V reference on AVCC, channel ADC2
-	DIDR0 = (1 << ADC5D)|(1 << ADC4D)|(1 << ADC3D)|(0 << ADC2D)|(1 << ADC1D)|(1 << ADC0D);	//disable all ADC except for ADC0
-	Wait_ms(10);
-	for (int i=0; i<2; i++){ADCSRA |= (1 << ADSC); while (ADCSRA & (1 << ADSC));} //does two
 	
+	//Take two ADC readings, throw the first one out.
+	for (int i=0; i<2; i++){ADCSRA |= (1 << ADSC); while (ADCSRA & (1 << ADSC));} //does two
+
+	//Get the last ADC reading.	
 	ADCreading = ADCL;
 	ADCreading |= (ADCH << 8);
 	
@@ -314,13 +315,9 @@ int GetADC(){
 		times=0;
 	}
 	
-	DIDR0 |= (1 << ADC0D);
-	PRR |= (1 << PRADC);
-	ADMUX=0;
-	ADCSRA=0;
-	
-	return ADCreading;
+	//Re-enable global interrupts. 
 	sei();
+	return ADCreading;
 }
 	
 /*************************************************************************************************************/
