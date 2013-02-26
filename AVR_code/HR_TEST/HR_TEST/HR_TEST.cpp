@@ -29,6 +29,11 @@ using namespace std;
 #define ddrLED DDRC
 #define bnLED  5
 
+//Timer Overflow define for speed
+#define TIMER_OFFSET 1023
+#define WHEEL_DISTANCE .0013882576	//87.96" circumference in miles
+
+//Baud/UART defines
 #define FOSC 8000000
 #define BAUD 9600
 #define MYUBRR FOSC/16/BAUD-1
@@ -44,8 +49,42 @@ void Print0(char string[]);
 //IBI=ms inbetween beats; BPM=beats per minute; signal =adc reading. P=peak, T=trough, thresh=threshold, amp=amplitude
 volatile int BPM, IBI;
 volatile BOOL QS=fFalse;
+volatile int speedPoints[10];
 
 //ISR
+ISR(INT0_vect){
+	cli();
+	volatile static BOOL firstPoint=fTrue;
+	volatile static int lastTime=0;
+	volatile int newTime=0;
+	
+	if (firstPoint){
+		if (TCNT1 < lastTime){
+			newTime=TCNT1+TIMER_OFFSET;
+		} else {
+			newTime=TCNT1;
+		}
+		for (int i=0; i< 10; i++){
+			speedPoints[i]=newTime-lastTime;
+		}
+		firstPoint=fFalse;
+	} else {
+		for (int i=0; i<9; i++){
+			speedPoints[i]=speedPoints[i+1];	//shift everything down.
+		}
+		if (TCNT1 < lastTime){
+			newTime=TCNT1+TIMER_OFFSET;
+		} else {
+			newTime=TCNT1;
+		}
+		speedPoints[9]=newTime-lastTime;
+	}
+	lastTime=TCNT1;
+	sei();	
+}
+
+
+//Toggled every 2ms roughly. 1/(8MHz/128/124)
 ISR(TIMER2_COMPA_vect){
 	cli();
 	//Declare variables
@@ -179,16 +218,24 @@ void AppInit(unsigned int ubrr){
 	PRR |= (1 << PRTWI)|(1 << PRTIM1)|(1 << PRTIM0)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0) and TIM2
 
 	//Initialize timer 2, counter compare on TCNTA compare equals
-	TCCR2A = 0x02;
-	TCCR2B = 0x05;
-	OCR2A = 0x7c;
-	TIMSK2 = 0x02;
+	TCCR2A = (1 << WGM21);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
+	TCCR2B = (1 << CS22)|(1 << CS20);	//clk/128
+	OCR2A = 0x7c;		//124
+	TIMSK2 = (1 << OCIE2A);				//enable OCIE2A
 	
+	//Initialize Timre 1, counter is read on an interrupt to measure speed. assumes rider is going  above a certain speed for initial test.
+	TCCR1A = 0x00;	//normal mode, mode 0
+	TCCR1B = (1 << CS12)|(1 << CS11); //Prescaler of 256 for system clock
+	
+	
+	//87.96" distance travelled on normal 28" bicycle wheel
+	//speed = distance/time; 87.96" = .0013882576 miles
+	//20mph/distance=14406= 1/time => time=249.88ms; therefore, have the thing divide by 2343.75 for a good number. If 1MHz clock, could divide by 512 and get somewhat close. 
 	//Setup LED Blinking Port
 	ddrLED |= (1 << bnLED);
 	prtLED &= ~(1 << bnLED);	//off initially.
 	
-	//Enable Global Interrupts.
+	//Enable Global Interrupts. 
 	sei();	
 	
 }
