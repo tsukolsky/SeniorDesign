@@ -28,10 +28,13 @@ using namespace std;
 #define prtLED PORTC
 #define ddrLED DDRC
 #define bnLED  5
+#define bnSPEEDLED  4
 
 //Timer Overflow define for speed
-#define TIMER_OFFSET 1023
+#define TIMER_OFFSET 65535
+#define TIMER1_CLOCK_sec .000032
 #define WHEEL_DISTANCE .0013882576	//87.96" circumference in miles
+#define SECONDS_IN_HOUR 3600
 
 //Baud/UART defines
 #define FOSC 8000000
@@ -48,38 +51,59 @@ void Print0(char string[]);
 //Globals
 //IBI=ms inbetween beats; BPM=beats per minute; signal =adc reading. P=peak, T=trough, thresh=threshold, amp=amplitude
 volatile int BPM, IBI;
-volatile BOOL QS=fFalse;
-volatile int speedPoints[10];
+volatile BOOL QS=fFalse, flagCalcSpeed=fFalse;;
+volatile int speedPoints[5];
 
 //ISR
+ISR(TIMER1_OVF_vect){
+	cli();
+	//Do nothing;
+	prtLED |= (1 << bnLED);
+	Wait_ms(10);
+	prtLED &= ~(1 << bnLED);
+	sei();
+}
+
 ISR(INT0_vect){
 	cli();
 	volatile static BOOL firstPoint=fTrue;
-	volatile static int lastTime=0;
-	volatile int newTime=0;
+	volatile static unsigned int lastTime=0,interruptsSinceLastCalc=0;
+	volatile unsigned int newTime=0;
+
+	unsigned int value=TCNT1;
+
+	newTime=value;
+
+	if (interruptsSinceLastCalc++ > 5){
+		flagCalcSpeed=fTrue;
+		interruptsSinceLastCalc=0;
+	}
+	
+	prtLED |= (1 << bnSPEEDLED);
+	Wait_ms(10);
+	prtLED &= ~(1 << bnSPEEDLED);
+	
+	char tempString1[10];
 	
 	if (firstPoint){
-		if (TCNT1 < lastTime){
-			newTime=TCNT1+TIMER_OFFSET;
-		} else {
-			newTime=TCNT1;
-		}
-		for (int i=0; i< 10; i++){
+		if (newTime < lastTime){
+			newTime+=TIMER_OFFSET;
+		}		
+		for (int i=0; i< 5; i++){
 			speedPoints[i]=newTime-lastTime;
 		}
 		firstPoint=fFalse;
 	} else {
-		for (int i=0; i<9; i++){
+		for (int i=0; i<5; i++){
 			speedPoints[i]=speedPoints[i+1];	//shift everything down.
 		}
-		if (TCNT1 < lastTime){
-			newTime=TCNT1+TIMER_OFFSET;
-		} else {
-			newTime=TCNT1;
-		}
-		speedPoints[9]=newTime-lastTime;
+		if (newTime < lastTime){
+			newTime+=TIMER_OFFSET;
+		}		
+		speedPoints[4]=newTime-lastTime;
 	}
-	lastTime=TCNT1;
+	lastTime=newTime;
+
 	sei();	
 }
 
@@ -168,26 +192,47 @@ ISR(TIMER2_COMPA_vect){
 int main(void){
 	DeviceInit();
 	AppInit(MYUBRR);
-	
+	Print0("Hello...");
 	while (fTrue){
 		//while(flagSampleADC
+		int sample=GetADC();
+		Wait_ms(100);
 		if (QS){
-			Print0("Processing...");
+			//Print0("Processing...");
 			QS=fFalse;
 			char BMPstring[10];
 			char IBIstring[10];
-			itoa(BPM,BMPstring,10);
-			itoa(IBI,IBIstring,10);
+			utoa(BPM,BMPstring,10);
+			utoa(IBI,IBIstring,10);
 			BMPstring[9]='\0';
 			BMPstring[8]='.';
-			Print0("BPM:");
-			Print0(BMPstring);
+			//Print0("BPM:");
+			//Print0(BMPstring);
 			IBIstring[9]='\0';
 			IBIstring[8]='.';
-			Print0("IBI:");
-			Print0(IBIstring);	
-			Wait_ms(20);
+			//Print0("IBI:");
+			//Print0(IBIstring);	
+			//Wait_ms(20);
 		}
+		
+		if (flagCalcSpeed){
+			unsigned int value=TCNT1;
+			//Calculate speed using data points.
+			float sum=0;
+			float speed=0;
+			char tempString[8];
+			for (int i=0; i<5; i++){
+				sum+=speedPoints[i];
+			}
+			speed=SECONDS_IN_HOUR*WHEEL_DISTANCE/(sum*TIMER1_CLOCK_sec/10);
+			dtostrf(speed,5,2,tempString);
+			tempString[6]='.';
+			tempString[7]='\0';
+			Print0("Speed:");
+			Print0(tempString);
+			flagCalcSpeed=fFalse;
+		}
+		
 		//Needs external oscillator.
 		//SMCR = (1 << SE);	//enable the idle
 		//asm volatile("SLEEP");	//goes into idle state. wakes up on compare		
@@ -215,25 +260,30 @@ void AppInit(unsigned int ubrr){
 	UCSR0C = (1 << UCSZ01)|(1 << UCSZ00);	//Async, 8 data bits no parity
 	
 	//Disable power to certain modules
-	PRR |= (1 << PRTWI)|(1 << PRTIM1)|(1 << PRTIM0)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0) and TIM2
+	PRR |= (1 << PRTWI)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0) and TIM2
 
 	//Initialize timer 2, counter compare on TCNTA compare equals
 	TCCR2A = (1 << WGM21);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
 	TCCR2B = (1 << CS22)|(1 << CS20);	//clk/128
 	OCR2A = 0x7c;		//124
-	TIMSK2 = (1 << OCIE2A);				//enable OCIE2A
+	//TIMSK2 = (1 << OCIE2A);				//enable OCIE2A
 	
 	//Initialize Timre 1, counter is read on an interrupt to measure speed. assumes rider is going  above a certain speed for initial test.
-	TCCR1A = 0x00;	//normal mode, mode 0
-	TCCR1B = (1 << CS12)|(1 << CS11); //Prescaler of 256 for system clock
+	/*TCCR1B |= (1 << CS12); //Prescaler of 256 for system clock
+	TIFR1= (1 << TOV2);
+	TIMSK1=(1 << TOIE2);
+	TCNT1=0;*/
 	
+	//Enable SPeed interrupt
+	EICRA = (1 << ISC01)|(1 << ISC00);
+	//EIMSK = (1 << INT0);
 	
 	//87.96" distance travelled on normal 28" bicycle wheel
 	//speed = distance/time; 87.96" = .0013882576 miles
 	//20mph/distance=14406= 1/time => time=249.88ms; therefore, have the thing divide by 2343.75 for a good number. If 1MHz clock, could divide by 512 and get somewhat close. 
 	//Setup LED Blinking Port
-	ddrLED |= (1 << bnLED);
-	prtLED &= ~(1 << bnLED);	//off initially.
+	ddrLED |= (1 << bnLED)|(1 << bnSPEEDLED);
+	prtLED &= ~((1 << bnSPEEDLED)|(1 << bnLED));	//off initially.
 	
 	//Enable Global Interrupts. 
 	sei();	
@@ -244,15 +294,25 @@ void AppInit(unsigned int ubrr){
 
 int GetADC(){
 	//Pruple wire connected to ADC0
-	
-	int ADCreading=0;
+	static int times=0;
+	cli();
+	volatile WORD ADCreading=0;
 	PRR &= ~(1 << PRADC);	//give power back to adc
-	ADMUX |= (1 << REFS1);	//internal 3.3V reference on AVCC, channel ADC0
-	DIDR0 = (1 << ADC5D)|(1 << ADC4D)|(1 << ADC3D)|(0 << ADC2D)|(1 << ADC1D);	//disable all ADC except for ADC0
+	ADMUX |= (1 << REFS0)|(1 << MUX1);	//internal 3.3V reference on AVCC, channel ADC2
+	DIDR0 = (1 << ADC5D)|(1 << ADC4D)|(1 << ADC3D)|(0 << ADC2D)|(1 << ADC1D)|(1 << ADC0D);	//disable all ADC except for ADC0
+	Wait_ms(10);
 	for (int i=0; i<2; i++){ADCSRA |= (1 << ADSC); while (ADCSRA & (1 << ADSC));} //does two
 	
 	ADCreading = ADCL;
 	ADCreading |= (ADCH << 8);
+	
+	if (times++>=10){
+		char tempString[10];
+		utoa(ADCreading,tempString,10);
+		tempString[9]='\0';
+		Print0(tempString);
+		times=0;
+	}
 	
 	DIDR0 |= (1 << ADC0D);
 	PRR |= (1 << PRADC);
@@ -260,6 +320,7 @@ int GetADC(){
 	ADCSRA=0;
 	
 	return ADCreading;
+	sei();
 }
 	
 /*************************************************************************************************************/
