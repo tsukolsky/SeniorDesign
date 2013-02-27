@@ -30,7 +30,7 @@ using namespace std;
 #include <string.h>
 #include <avr/io.h>
 #include "stdtypes.h"
-#include "trip.h"
+//#include "trip.h"
 
 #define prtLED PORTC
 #define ddrLED DDRC
@@ -47,8 +47,9 @@ using namespace std;
 
 void DeviceInit();
 void AppInit(unsigned int ubrr);
+void initTimer2();
 WORD GetADC();
-void Wait_ms(int delay);
+void Wait_ms(volatile int delay);
 void PutUart0Ch(char ch);
 void Print0(char string[]);
 
@@ -56,9 +57,12 @@ void Print0(char string[]);
 //IBI=ms inbetween beats; BPM=beats per minute; signal =adc reading. P=peak, T=trough, thresh=threshold, amp=amplitude
 volatile int BPM, IBI;
 volatile BOOL QS=fFalse, flagCalcSpeed=fFalse;
+volatile WORD N=0;
+volatile BOOL firstBeat=fTrue, secondBeat=fTrue, pulse=fFalse;
+volatile WORD rate[10];
 
 //Global trip
-trip globalTrip;
+//trip globalTrip;
 
 //ISR
 ISR(TIMER1_OVF_vect){
@@ -89,9 +93,9 @@ ISR(INT0_vect){
 	prtLED &= ~(1 << bnSPEEDLED);
 	
 	if (newTime < lastTime){
-		odometer1.addNewDataPoint(newTime+TIMER_OFFSET-lastTime);
+		//odometer1.addNewDataPoint(newTime+TIMER_OFFSET-lastTime);
 	} else {
-		odometer1.addNewDataPoint(newTime-lastTime);
+		//odometer1.addNewDataPoint(newTime-lastTime);
 	}
 
 	//Update last time
@@ -101,19 +105,18 @@ ISR(INT0_vect){
 }
 
 
-//Toggled every 2ms roughly. 1/(8MHz/128/124)
+//Toggled every 4ms roughly. 1/(8MHz/128/248)
 ISR(TIMER2_COMPA_vect){
 	cli();
 	//Declare variables
 	WORD signal=0;
 	volatile static int rate[10],P=512,T=512,thresh=512,amp=100;
-	volatile static unsigned long sampleCounter=0, lastBeatTime=0;
-	volatile static BOOL pulse=fFalse,firstBeat=fTrue,secondBeat=fTrue;
+	volatile static WORD N=0;
+	
+	N+=2;
 	
 	//Implementation: Should be moved to a routine/function in main program where this sends flag up.
 	signal = GetADC();		//retrieves ADC reading on ADC0
-	sampleCounter += 2;
-	int N = sampleCounter - lastBeatTime;
 	
 	//Adjust Peak and Trough Accordingly
 	if (signal < thresh && N > (IBI/5)*3){		//signals less than thresh, time inbetween is more than last interval * 3/5
@@ -127,37 +130,34 @@ ISR(TIMER2_COMPA_vect){
 	
 	//If time since alst read is more than 250, see if signal is above thresh and time is good.
 	if (N>250){
-		if ((signal > thresh) && !pulse && (N>((IBI/5)*3))){	//send pulse high
+		if ((signal > thresh) && !pulse && (N>((IBI/5)*3)) && !firstBeat){	//send pulse high
+			Print0("-BEAT-");
 			pulse=fTrue;
 			prtLED |= (1 << bnLED);		//turn LED on
 			IBI=N;
-			lastBeatTime=sampleCounter;
-		}
-	
-		//If first or second beat, act accordingly
-		if (firstBeat){
-			firstBeat=fFalse;
-			return;
-		}
-		if (secondBeat){
-			secondBeat=fFalse;
-			for (int i=0; i < 10; i++){
-				rate[i]=IBI;
+			N=0;
+			if (secondBeat){
+				secondBeat=fFalse;
+				for (int i=0; i < 9; i++){
+					rate[i]=IBI;
+				}
 			}
-		}
-	
-		//Calculate the IBI and BPM.
-		WORD runningTotal=0;
-		for (int i=0; i< 9; i++){
-			rate[i]=rate[i+1];	//shift backwards
-			runningTotal += rate[i];
-		}
-		rate[9]=IBI;
-		runningTotal+=rate[9];
-		runningTotal/=10;			//time it took all of them in milliseconds
-		BPM=60000/runningTotal;		//60 seconds in minute, 1000ms in second
-		QS=fTrue;
-		lastBeatTime=sampleCounter;
+		
+			//Calculate the IBI and BPM.
+			volatile WORD runningTotal=0;
+			for (int i=0; i< 9; i++){
+				rate[i]=rate[i+1];	//shift backwards
+				runningTotal += rate[i];
+			}
+			rate[9]=IBI;
+			runningTotal+=rate[9];
+			runningTotal/=10;			//time it took all of them in milliseconds
+			BPM=60000/runningTotal;		//60 seconds in minute, 1000ms in second
+			QS=fTrue;
+
+		} else if (firstBeat){
+				firstBeat=fFalse;
+		}		
 	}//end if N>250
 		
 	//No pulse after last interrupt/pulse, send signal low again, reset things.
@@ -171,13 +171,14 @@ ISR(TIMER2_COMPA_vect){
 	}
 	
 	//Wow, not getting a pulse, reset things
-	if (N>2500){
+	if (N>=20000){
+		Print0("-TIMEOUT-");
 		thresh=512;
 		P=512;
 		T=512;
 		firstBeat=fTrue;
 		secondBeat=fTrue;
-		lastBeatTime=sampleCounter;
+		N=0;
 	}
 	sei();		//dumb as shit
 }
@@ -187,10 +188,13 @@ int main(void){
 	DeviceInit();
 	AppInit(MYUBRR);
 	Print0("Hello...");
+	Wait_ms(500);
+	initTimer2();	
+	sei();
 	while (fTrue){
-
 		if (QS){
-			//Print0("Processing...");
+			cli();
+			Print0("Processing...");
 			QS=fFalse;
 			char BMPstring[10];
 			char IBIstring[10];
@@ -198,21 +202,17 @@ int main(void){
 			utoa(IBI,IBIstring,10);
 			BMPstring[9]='\0';
 			BMPstring[8]='.';
-			//Print0("BPM:");
-			//Print0(BMPstring);
-			IBIstring[9]='\0';
-			IBIstring[8]='.';
-			//Print0("IBI:");
-			//Print0(IBIstring);	
-			//Wait_ms(20);
+			Print0("BPM:");
+			Print0(BMPstring);
+			sei();
 		}
 		
 		if (flagCalcSpeed){
 			//Calculate speed using data points.
 			float speed;
 			char speedString[8];
-			speed = odometer1.getCurrentSpeed();
-			dtostrf(speed,5,2,tempString);
+			//speed = odometer1.getCurrentSpeed();
+			dtostrf(speed,5,2,speedString);
 			speedString[6]='.';
 			speedString[7]='\0';
 			Print0("Speed:");
@@ -245,15 +245,10 @@ void AppInit(unsigned int ubrr){
 	//Disable power to certain modules
 	PRR |= (1 << PRTWI)|(1 << PRTIM0)|(1 << PRSPI);  //Turn off everything 
 
-	ADCSRA |= (1 << ADEN);				//enable ADC
+	ADCSRA |= (1 << ADEN)|(1 << ADPS1)|(1 << ADPS0);		//enable ADC with clock division factor of 8
 	ADMUX |= (1 << REFS0)|(1 << MUX1);		//internal 3.3V reference on AVCC, channel ADC2
 
-	//Initialize timer 2, counter compare on TCNTA compare equals
-	TCCR2A = (1 << WGM21);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
-	TCCR2B = (1 << CS22)|(1 << CS20);		//clk/128
-	OCR2A = 0x7c;					//124
-	TCNT2 = 0x00;					//Initialize
-	//TIMSK2 = (1 << OCIE2A);				//enable OCIE2A
+
 	
 	//Initialize Timer 1(16-bit), counter is read on an interrupt to measure speed. assumes rider is going  above a certain speed for initial test.
 	TCCR1B |= (1 << CS12); 				//Prescaler of 256 for system clock
@@ -269,18 +264,26 @@ void AppInit(unsigned int ubrr){
 	//Setup LED Blinking Port
 	ddrLED |= (1 << bnLED)|(1 << bnSPEEDLED);
 	prtLED &= ~((1 << bnSPEEDLED)|(1 << bnLED));	//off initially.
-	
-	//Enable Global Interrupts. 
-	sei();	
+		
 }
+/*************************************************************************************************************/
+void initTimer2(){
+	//Initialize timer 2, counter compare on TCNTA compare equals
+	TCCR2A = (1 << WGM21);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
+	TCCR2B = (1 << CS22)|(1 << CS20);		//clk/128
+	OCR2A = 0x7c;					//248
+	TCNT2 = 0x00;					//Initialize
+	TIMSK2 = (1 << OCIE2A);				//enable OCIE2A
+}
+
 
 /*************************************************************************************************************/
 
 WORD GetADC(){
 	//Disable global interrupts; declare variables.
-	cli();
-	static int times=0;
+	//cli();
 	volatile WORD ADCreading=0;
+	volatile static int reps=0;
 	
 	//Take two ADC readings, throw the first one out.
 	for (int i=0; i<2; i++){ADCSRA |= (1 << ADSC); while (ADCSRA & (1 << ADSC));} //does two
@@ -289,21 +292,22 @@ WORD GetADC(){
 	ADCreading = ADCL;
 	ADCreading |= (ADCH << 8);
 	
-	if (times++>=10){
+	if (reps++>50){
 		char tempString[10];
-		utoa(ADCreading,tempString,10);
+			utoa(ADCreading,tempString,10);
+		tempString[8]='-';	
 		tempString[9]='\0';
 		Print0(tempString);
-		times=0;
-	}
+		reps=0;
+	}	
 	
 	//Re-enable global interrupts. 
-	sei();
+	//sei();
 	return ADCreading;
 }
 	
 /*************************************************************************************************************/
-void Wait_ms(int delay){
+void Wait_ms(volatile int delay){
 	volatile int i=0;
 	while (delay > 0){
 		for (i=0; i < 400; i++){
