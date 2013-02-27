@@ -30,7 +30,7 @@ using namespace std;
 #include <string.h>
 #include <avr/io.h>
 #include "stdtypes.h"
-#include "odometerClass.h"
+#include "trip.h"
 
 #define prtLED PORTC
 #define ddrLED DDRC
@@ -57,7 +57,8 @@ void Print0(char string[]);
 volatile int BPM, IBI;
 volatile BOOL QS=fFalse, flagCalcSpeed=fFalse;
 
-odometer odometer1();
+//Global trip
+trip globalTrip;
 
 //ISR
 ISR(TIMER1_OVF_vect){
