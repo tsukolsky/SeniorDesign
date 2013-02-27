@@ -30,6 +30,7 @@ using namespace std;
 #include <string.h>
 #include <avr/io.h>
 #include "stdtypes.h"
+#include "odometerClass.h"
 
 #define prtLED PORTC
 #define ddrLED DDRC
@@ -38,9 +39,6 @@ using namespace std;
 
 //Timer Overflow define for speed
 #define TIMER_OFFSET 65535
-#define TIMER1_CLOCK_sec .000032
-#define WHEEL_DISTANCE .0013882576	//87.96" circumference in miles
-#define SECONDS_IN_HOUR 3600
 
 //Baud/UART defines
 #define FOSC 8000000
@@ -57,8 +55,9 @@ void Print0(char string[]);
 //Globals
 //IBI=ms inbetween beats; BPM=beats per minute; signal =adc reading. P=peak, T=trough, thresh=threshold, amp=amplitude
 volatile int BPM, IBI;
-volatile BOOL QS=fFalse, flagCalcSpeed=fFalse;;
-volatile int speedPoints[5];
+volatile BOOL QS=fFalse, flagCalcSpeed=fFalse;
+
+odometer odometer1();
 
 //ISR
 ISR(TIMER1_OVF_vect){
@@ -72,7 +71,6 @@ ISR(TIMER1_OVF_vect){
 
 ISR(INT0_vect){
 	cli();
-	volatile static BOOL firstPoint=fTrue;
 	volatile static unsigned int lastTime=0,interruptsSinceLastCalc=0;
 	volatile unsigned int newTime=0;
 
@@ -80,7 +78,7 @@ ISR(INT0_vect){
 
 	newTime=value;
 
-	if (interruptsSinceLastCalc++ > 5){
+	if (interruptsSinceLastCalc++ > 8){
 		flagCalcSpeed=fTrue;
 		interruptsSinceLastCalc=0;
 	}
@@ -89,25 +87,13 @@ ISR(INT0_vect){
 	Wait_ms(10);
 	prtLED &= ~(1 << bnSPEEDLED);
 	
-	char tempString1[10];
-	
-	if (firstPoint){
-		if (newTime < lastTime){
-			newTime+=TIMER_OFFSET;
-		}		
-		for (int i=0; i< 5; i++){
-			speedPoints[i]=newTime-lastTime;
-		}
-		firstPoint=fFalse;
+	if (newTime < lastTime){
+		odometer1.addNewDataPoint(newTime+TIMER_OFFSET-lastTime);
 	} else {
-		for (int i=0; i<5; i++){
-			speedPoints[i]=speedPoints[i+1];	//shift everything down.
-		}
-		if (newTime < lastTime){
-			newTime+=TIMER_OFFSET;
-		}		
-		speedPoints[4]=newTime-lastTime;
+		odometer1.addNewDataPoint(newTime-lastTime);
 	}
+
+	//Update last time
 	lastTime=newTime;
 
 	sei();	
@@ -221,20 +207,15 @@ int main(void){
 		}
 		
 		if (flagCalcSpeed){
-			unsigned int value=TCNT1;
 			//Calculate speed using data points.
-			float sum=0;
-			float speed=0;
-			char tempString[8];
-			for (int i=0; i<5; i++){
-				sum+=speedPoints[i];
-			}
-			speed=SECONDS_IN_HOUR*WHEEL_DISTANCE/(sum*TIMER1_CLOCK_sec/10);
+			float speed;
+			char speedString[8];
+			speed = odometer1.getCurrentSpeed();
 			dtostrf(speed,5,2,tempString);
-			tempString[6]='.';
-			tempString[7]='\0';
+			speedString[6]='.';
+			speedString[7]='\0';
 			Print0("Speed:");
-			Print0(tempString);
+			Print0(speedString);
 			flagCalcSpeed=fFalse;
 		}	
 	}
