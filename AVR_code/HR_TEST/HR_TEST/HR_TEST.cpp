@@ -30,7 +30,7 @@ using namespace std;
 #include <string.h>
 #include <avr/io.h>
 #include "stdtypes.h"
-//#include "trip.h"
+#include "trip.h"
 
 #define prtLED PORTC
 #define ddrLED DDRC
@@ -55,14 +55,14 @@ void Print0(char string[]);
 
 //Globals
 //IBI=ms inbetween beats; BPM=beats per minute; signal =adc reading. P=peak, T=trough, thresh=threshold, amp=amplitude
-volatile int BPM, IBI;
+volatile unsigned int BPM, IBI;
 volatile BOOL QS=fFalse, flagCalcSpeed=fFalse;
 volatile WORD N=0;
 volatile BOOL firstBeat=fTrue, secondBeat=fTrue, pulse=fFalse;
 volatile WORD rate[10];
 
-//Global trip
-//trip globalTrip;
+//Global trip 
+trip globalTrip;
 
 //ISR
 ISR(TIMER1_OVF_vect){
@@ -93,9 +93,9 @@ ISR(INT0_vect){
 	prtLED &= ~(1 << bnSPEEDLED);
 	
 	if (newTime < lastTime){
-		//odometer1.addNewDataPoint(newTime+TIMER_OFFSET-lastTime);
+		globalTrip.addDataPoint(newTime+TIMER_OFFSET-lastTime);
 	} else {
-		//odometer1.addNewDataPoint(newTime-lastTime);
+		globalTrip.addDataPoint(newTime-lastTime);
 	}
 
 	//Update last time
@@ -110,7 +110,7 @@ ISR(TIMER2_COMPA_vect){
 	cli();
 	//Declare variables
 	WORD signal=0;
-	volatile static int rate[10],P=512,T=512,thresh=512,amp=100;
+	volatile static unsigned int rate[10],P=512,T=512,thresh=512,amp=100;
 	volatile static WORD N=0;
 	
 	N+=2;
@@ -211,7 +211,7 @@ int main(void){
 			//Calculate speed using data points.
 			float speed;
 			char speedString[8];
-			//speed = odometer1.getCurrentSpeed();
+			speed = globalTrip.getCurrentSpeed();
 			dtostrf(speed,5,2,speedString);
 			speedString[6]='.';
 			speedString[7]='\0';

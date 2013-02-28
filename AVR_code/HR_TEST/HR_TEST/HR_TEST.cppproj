@@ -20,7 +20,7 @@
     <OverrideVtor>false</OverrideVtor>
     <OverrideVtorValue />
     <eraseonlaunchrule>0</eraseonlaunchrule>
-    <AsfVersion>3.5.0</AsfVersion>
+    <AsfVersion>2.9.0</AsfVersion>
     <avrtoolinterface />
     <avrtool>com.atmel.avrdbg.tool.simulator</avrtool>
     <com_atmel_avrdbg_tool_simulator>
@@ -96,10 +96,19 @@
     </ToolchainSettings>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="heartMonitor.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="HR_TEST.cpp">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="odometer.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="stdtypes.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trip.h">
       <SubType>compile</SubType>
     </Compile>
   </ItemGroup>

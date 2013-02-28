@@ -3,18 +3,24 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 2/26/2013
-| Last Revised: 2/26/2013
+| Last Revised: 2/28/2013
 | Copyright of Todd Sukolsky and BU ECE Senior Design teamp Re.Cycle
 |================================================================================
-| Description: This class is used to keep track of current speed, average speed, 
-|	       average heart rate, distance travelled, etc.
+| Description: This class is defined as an odometer. Odometer functions include
+|	current speed, average speed, time and distance travelled. The "Trip" class
+|   inherits this class.
 |--------------------------------------------------------------------------------
-| Revisions:  **Make this something that is inherited by Trip Class.**
+| Revisions:  2/26: Initial build. Idea is to have Trips inherit this is some way
+|			  2/28: Changed a little of the functionality. Added initial time/date
+|					feature as well as time elapsed. Should be good, just needs
+|					optimizing now.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
 
 #include <stdlib.h>
+#include <stdio.h>
+#include "stdtypes.h"
 
 #define DEFAULT_WHEEL_SIZE .0013882576		//28" wheel size
 #define SECONDS_IN_HOUR 3600
@@ -24,62 +30,91 @@
 
 using namespace std;
 
+//The RTC being used.
+//extern theClock;
+
 class odometer{
 	public:
 		odometer();
-		odometer(float wheelSize);
-		odometer(float swapAveSpeed, float swapDistance, float swapCurrentSpeed, float swapWheelSize, unsigned int swapSpeedPoints);
-		void setOdometer(float wheelSize);		
+		void setNewOdometerWOtime(float wheelSize=DEFAULT_WHEEL_SIZE);											//New odometer without valid time
+		void setNewOdometerWtime(float wheelSize=DEFAULT_WHEEL_SIZE, unsigned int sDate=0, unsigned int sTime=0);	//New odometer with valid time
+		void setOdometer(float swapAveSpeed, float swapDistance, float swapCurrentSpeed, float swapWheelSize, unsigned int swapSpeedPoints,unsigned int timeElapsed,unsigned int sDate, unsigned int sTime);	//Had shutdown, set the odometer with all the statistics.	
+		/*Functions we need*\
+		void setOdometerTime(unsigned int sDate, unsigned int sTime, unsigned int timeElapsed);
+		\*******************/
 		void setWheelSize(float wheelSize);
 		void addDataPoint(unsigned int newDataPoint);
+		
+		//Get functions for normal odometer stuff
 		unsigned int getSpeedPoints();
 		float getCurrentSpeed();
 		float getAverageSpeed();
 		float getDistance();
 		float getWheelSize();	
-	
+		//Stuff for time and date
+		unsigned int getTotalTime(unsigned int eTime, unsigned int eDate);
+		
 	private:
-		bool firstRun;
 		float aveSpeed, distance, currentSpeed,wheelSize,speedWeight;
+		unsigned int sDate,sTime,eTime,eDate;	//may not need these, need to look into implementation
+		unsigned int timeElapsed;
 		unsigned int dataPoints[10];
 		unsigned int speedPoints;	//number of speed points
+		BOOL firstRun;
 		void updateStats();
+		void resetOdometer();
+		
 };
 
 //For new odometer, initialize everything
 odometer::odometer(){
-	firstRun=true;
+	wheelSize=DEFAULT_WHEEL_SIZE;
+	resetOdometer();
+}
+
+//How we reset odometer. Everyting is reset except WHEEL SIZE, that's done by the calling function.
+void odometer::resetOdometer(){
+	firstRun=fTrue;
 	aveSpeed=0;
 	distance=0;
 	currentSpeed=0;
 	speedWeight=0;
 	speedPoints=0;
-	wheelSize=DEFAULT_WHEEL_SIZE;
+	sDate=0;
+	sTime=0;
+	timeElapsed=0;
 	for (int i=0; i<10; i++){
 		dataPoints[i]=0;
 	}
 }
+
 
 //New odometer with wheel size.
-odometer::odometer(float wheelSize){
-	firstRun=true;
+void odometer::setNewOdometerWOtime(float wheelSize){
 	this->wheelSize=wheelSize;
-	aveSpeed=0;
-	distance=0;
-	currentSpeed=0;
-	speedWeight=0;
-	speedPoints=0;
-	for (int i=0; i<10; i++){
-		dataPoints[i]=0;
-	}
+	resetOdometer();
 }
 
-odometer::odometer(float swapAveSpeed, float swapDistance, float swapCurrentSpeed, float swapWheelSize, unsigned int swapSpeedPoints){
+//New Odometer with wheel size and accurate/valid date and time.
+void odometer::setNewOdometerWtime(float wheelSize, unsigned int sDate, unsigned int sTime){
+	this->wheelSize=wheelSize;
+	this->sDate=sDate;
+	this->sTime=sTime;
+	resetOdometer();
+	
+}
+
+//Restart of the module, need to set everything.
+void odometer::setOdometer(float swapAveSpeed, float swapDistance, float swapCurrentSpeed, float swapWheelSize, unsigned int swapSpeedPoints,unsigned int swapTimeElapsed,unsigned int swapSDate, unsigned int swapSTime){
 	aveSpeed=swapAveSpeed;
 	distance=swapDistance;
 	currentSpeed=swapCurrentSpeed;
 	wheelSize=swapWheelSize;
 	speedPoints=swapSpeedPoints;
+	timeElapsed=swapTimeElapsed;
+	sDate=swapSDate;
+	sTime=swapSTime;
+	firstRun=fTrue;
 }
 
 //New speed data point
@@ -89,7 +124,7 @@ void odometer::addDataPoint(unsigned int newDataPoint){
 		for (int j=0; j<10;j++){
 			dataPoints[j]=newDataPoint;
 		}
-		firstRun=false;				//reset flag
+		firstRun=fFalse;				//reset flag
 	} else {
 		//Shift data back one
 		for (int i=0; i<9; i++){
@@ -105,7 +140,7 @@ void odometer::addDataPoint(unsigned int newDataPoint){
 
 //Updating wheel size. Don't reset anything, but initialize first run to eliminate old speeds. 
 void odometer::setWheelSize(float wheelSize){
-	bool firstRun=true;
+	firstRun=fTrue;
 	this->wheelSize=wheelSize;
 }
 
@@ -144,31 +179,15 @@ float odometer::getDistance(){
 float odometer::getWheelSize(){
 	return wheelSize;
 }
-		
+	
 unsigned int odometer::getSpeedPoints(){
 	return speedPoints;
 }
 
-//Setting an already existing odometer, same thing as initial startup with wheelSize, just don't want to duplicate. THis might be obsolete/pointless because you can't call a specific polymorphed function in a child...maybe calling a new odometer deletes the old ones. Need to test.
-void odometer::setOdometer(float wheelSize){
-	firstRun=true;
-	aveSpeed=0;
-	distance=0;
-	currentSpeed=0;
-	speedWeight=0;
-	speedPoints=0;
-	this->wheelSize=wheelSize;
-	for (int i=0; i<10; i++){
-		dataPoints[i]=0;
-	}
+unsigned int odometer::getTotalTime(unsigned int eDate, unsigned int eTime){
+	//Compute time between sDate/Time and eDate/Time, then add time elapsed.
+	return timeElapsed;
 }
-	
-
-
-
-
-
-
 
 
 
