@@ -2,7 +2,7 @@
 | HR_TEST.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/20/2013
-| Last Revised: 2/26/13
+| Last Revised: 3/1/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: The point of this module is to test the Pulse HR Sensor with the
@@ -11,6 +11,7 @@
 | Revisions: (1) Need to move this into a Flag oriented procedure. After initial testing
 |				 I will. Then step is to integrate with existing GAVR code.
 |	     2/26: Got Speed Sensor working. Working on HR.
+|		  3/1: Moved HR Functionality/logic into "heartMonitor" class. See "heartMonitor.h"
 |	
 |================================================================================
 | *NOTES: (1) 87.96" distance travelled on normal 28" bicycle wheel speed = distance/time; 
@@ -42,6 +43,7 @@ using namespace std;
 
 #define BAD_SPEED_THRESH 4
 #define CALC_SPEED_THRESH 3		//at 20MPH, 4 interrupts take 1 second w/clk, should be at least every second
+#define MINIMUM_HR_THRESH 400
 
 //Baud/UART defines
 #define FOSC 8000000
@@ -62,7 +64,7 @@ void powerDown();
 //IBI=ms inbetween beats; BPM=beats per minute; signal =adc reading. P=peak, T=trough, thresh=threshold, amp=amplitude
 volatile WORD numberOfSpeedOverflows=0;
 volatile unsigned int BPM, IBI;
-volatile BOOL QS=fFalse, flagCalcSpeed=fFalse, flagNoSpeed=fTrue, dead=fFalse;
+volatile BOOL QS=fFalse, flagUpdateUserStats=fFalse, flagNoSpeed=fTrue, dead=fFalse;
 volatile WORD N=0;
 volatile BOOL firstBeat=fTrue, secondBeat=fTrue, pulse=fFalse;
 volatile WORD rate[10];
@@ -98,7 +100,7 @@ ISR(INT0_vect){
 	//THis should be replaced by a flag that every second is sent high to calculate the speed. At 16MHz, will hit before an issue
 	//happens. Could also just have screen pull speed data before updating screen.
 	if (interruptsSinceLastCalc++ > CALC_SPEED_THRESH){
-		flagCalcSpeed=fTrue;
+		flagUpdateUserStats=fTrue;
 		interruptsSinceLastCalc=0;
 	}
 	/**********************************************************************************************/
@@ -128,78 +130,18 @@ ISR(TIMER0_COMPA_vect){
 	cli();
 	//Declare variables
 	WORD signal=0;
-	volatile static unsigned int rate[10],P=512,T=512,thresh=512,amp=100;
-	volatile static WORD N=0;
+	volatile static unsigned int N=0;
 	
-	//INcrement time since last timer interrupt. Assumes it doesnt miss any hits, small error
-	N+=2;
-	
-	//Implementation: Should be moved to a routine/function in main program where this sends flag up.
+	//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
+	N+=4;
 	signal = GetADC();		//retrieves ADC reading on ADC0
-	
-	//Adjust Peak and Trough Accordingly
-	if (signal < thresh && N > (IBI/5)*3){		//signals less than thresh, time inbetween is more than last interval * 3/5
-		if (signal < T){
-			T = signal;
-		}
-	}
-	if (signal > thresh && signal > P){
-		P = signal;
-	}
-	
-	//If time since last read is more than 250, see if signal is above thresh and time is good.
-	if (N>250){
-		if ((signal > thresh) && !pulse && (N>((IBI/5)*3)) && !firstBeat){	//send pulse high
-			Print0("-BEAT-");
-			pulse=fTrue;
-			prtLED |= (1 << bnLED);		//turn LED on
-			IBI=N;
-			N=0;
-			if (secondBeat){
-				secondBeat=fFalse;
-				for (int i=0; i < 9; i++){
-					rate[i]=IBI;
-				}
-			}
-		
-			//Calculate the IBI and BPM.
-			volatile WORD runningTotal=0;
-			for (int i=0; i< 9; i++){
-				rate[i]=rate[i+1];	//shift backwards
-				runningTotal += rate[i];
-			}
-			rate[9]=IBI;
-			runningTotal+=rate[9];
-			runningTotal/=10;			//time it took all of them in milliseconds
-			BPM=60000/runningTotal;		//60 seconds in minute, 1000ms in second
-			QS=fTrue;
-
-		} else if (firstBeat){
-				firstBeat=fFalse;
-		}		
-	}//end if N>250
-		
-	//No pulse after last interrupt/pulse, send signal low again, reset things.
-	if (signal < thresh && pulse){
-		prtLED &= ~(1 << bnLED);
-		pulse=fFalse;
-		amp=P-T;
-		thresh=amp/2+T;
-		P=thresh;
-		T=thresh;
-	}
-	
-	//Wow, not getting a pulse, reset things
-	if (N>=20000){
-		Print0("-TIMEOUT-");
-		thresh=512;
-		P=512;
-		T=512;
-		firstBeat=fTrue;
-		secondBeat=fTrue;
+	if (signal > MINIMUM_HR_THRESH){
+		globalTrip.newHRSample(signal, N);
 		N=0;
-	}
-	sei();		//dumb as shit
+	}	
+
+	//Re-enable interrupts
+	sei();
 }
 
 //Main Program
@@ -212,33 +154,30 @@ int main(void){
 	initSpeedSensing();
 	sei();
 	while (fTrue){
-		if (QS){
+		if (flagUpdateUserStats){
 			cli();
+			//Declare variables
+			double speed, currentHR;
+			char speedString[8], BPMstring[8];
+			
+			//Do work on HR
 			Print0("Processing...");
-			QS=fFalse;
-			char BMPstring[10];
-			char IBIstring[10];
-			utoa(BPM,BMPstring,10);
-			utoa(IBI,IBIstring,10);
-			BMPstring[9]='\0';
-			BMPstring[8]='.';
+			currentHR = globalTrip.getCurrentHR();
+			dtostrf(currentHR, 5, 2, BPMstring);
+			BPMstring[9]='\0';
+			BPMstring[8]='.';
 			Print0("BPM:");
-			Print0(BMPstring);
-			sei();
-		}
-		
-		if (flagCalcSpeed){
-			cli();
+			Print0(BPMstring);
+
 			//Calculate speed using data points.
-			float speed;
-			char speedString[8];
 			speed = globalTrip.getCurrentSpeed();
 			dtostrf(speed,5,2,speedString);
 			speedString[6]='.';
 			speedString[7]='\0';
 			Print0("Speed:");
 			Print0(speedString);
-			flagCalcSpeed=fFalse;
+			//Reset Flag
+			flagUpdateUserStats=fFalse;
 			sei();
 		}//end calc speed	
 		
@@ -302,9 +241,9 @@ void initHRSensing(){
 	//Initialize timer 2, counter compare on TCNTA compare equals
 	TCCR0A = (1 << WGM01);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
 	TCCR0B = (1 << CS02)|(1 << CS00);	//clk/128
-	OCR0A = 0x7c;						//248
+	OCR0A = (0x7c)*2;						//248
 	TCNT0 = 0x00;						//Initialize
-	//TIMSK0 = (1 << OCIE0A);			//enable OCIE2A
+	TIMSK0 = (1 << OCIE0A);			//enable OCIE2A
 }
 
 

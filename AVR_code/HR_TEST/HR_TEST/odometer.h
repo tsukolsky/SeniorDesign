@@ -36,28 +36,28 @@ using namespace std;
 class odometer{
 	public:
 		odometer();
-		void setNewOdometerWOtime(float wheelSize=DEFAULT_WHEEL_SIZE);											//New odometer without valid time
-		void setNewOdometerWtime(float wheelSize=DEFAULT_WHEEL_SIZE, unsigned int sDate=0, unsigned int sTime=0);	//New odometer with valid time
-		void setOdometer(float swapAveSpeed, float swapDistance, float swapCurrentSpeed, float swapWheelSize, unsigned int swapSpeedPoints,unsigned int timeElapsed,unsigned int sDate, unsigned int sTime);	//Had shutdown, set the odometer with all the statistics.	
+		void setNewOdometerWOtime(double wheelSize=DEFAULT_WHEEL_SIZE);											//New odometer without valid time
+		void setNewOdometerWtime(double wheelSize=DEFAULT_WHEEL_SIZE, unsigned int sDate=0, unsigned int sTime=0);	//New odometer with valid time
+		void setOdometer(double swapAveSpeed, double swapDistance, double swapCurrentSpeed, double swapWheelSize, unsigned int swapSpeedPoints,unsigned int timeElapsed,unsigned int sDate, unsigned int sTime);	//Had shutdown, set the odometer with all the statistics.	
 		/*Functions we need*\
 		void setOdometerTime(unsigned int sDate, unsigned int sTime, unsigned int timeElapsed);
 		\*******************/
-		void setWheelSize(float wheelSize);
+		void setWheelSize(double wheelSize);
 		void addSpeedDataPoint(unsigned int newDataPoint);
 		void resetSpeedPoints();
 		
 		//Get functions for normal odometer stuff
 		unsigned int getSpeedPoints();
-		float getCurrentSpeed();
-		float getAverageSpeed();
-		float getDistance();
-		float getWheelSize();	
+		double getCurrentSpeed();
+		double getAverageSpeed();
+		double getDistance();
+		double getWheelSize();	
 		//Stuff for time and date
 		unsigned int getTotalTime(unsigned int eTime, unsigned int eDate);
 		
 	private:
 		double aveSpeed, distance, currentSpeed,wheelSize,speedWeight;
-		unsigned int sDate,sTime,eTime,eDate;	//may not need these, need to look into implementation
+		unsigned int sDate,sTime;
 		unsigned int timeElapsed;
 		unsigned int dataPoints[10];
 		unsigned int speedPoints;	//number of speed points
@@ -91,13 +91,13 @@ void odometer::resetOdometer(){
 
 
 //New odometer with wheel size.
-void odometer::setNewOdometerWOtime(float wheelSize){
+void odometer::setNewOdometerWOtime(double wheelSize){
 	this->wheelSize=wheelSize;
 	resetOdometer();
 }
 
 //New Odometer with wheel size and accurate/valid date and time.
-void odometer::setNewOdometerWtime(float wheelSize, unsigned int sDate, unsigned int sTime){
+void odometer::setNewOdometerWtime(double wheelSize, unsigned int sDate, unsigned int sTime){
 	this->wheelSize=wheelSize;
 	this->sDate=sDate;
 	this->sTime=sTime;
@@ -106,7 +106,7 @@ void odometer::setNewOdometerWtime(float wheelSize, unsigned int sDate, unsigned
 }
 
 //Restart of the module, need to set everything.
-void odometer::setOdometer(float swapAveSpeed, float swapDistance, float swapCurrentSpeed, float swapWheelSize, unsigned int swapSpeedPoints,unsigned int swapTimeElapsed,unsigned int swapSDate, unsigned int swapSTime){
+void odometer::setOdometer(double swapAveSpeed, double swapDistance, double swapCurrentSpeed, double swapWheelSize, unsigned int swapSpeedPoints,unsigned int swapTimeElapsed,unsigned int swapSDate, unsigned int swapSTime){
 	aveSpeed=swapAveSpeed;
 	distance=swapDistance;
 	currentSpeed=swapCurrentSpeed;
@@ -153,7 +153,7 @@ void odometer::resetSpeedPoints(){
 }
 
 //Updating wheel size. Don't reset anything, but initialize first run to eliminate old speeds. 
-void odometer::setWheelSize(float wheelSize){
+void odometer::setWheelSize(double wheelSize){
 	firstRun=fTrue;
 	this->wheelSize=wheelSize;
 }
@@ -174,21 +174,21 @@ void odometer::updateSpeeds(){
 }
 
 //Get the current speed
-float odometer::getCurrentSpeed(){
+double odometer::getCurrentSpeed(){
 	return currentSpeed;
 }
 
 //Get the average speed
-float odometer::getAverageSpeed(){
+double odometer::getAverageSpeed(){
 	return aveSpeed;
 }
 
 //Get the distance travelled thus far in miles 
-float odometer::getDistance(){
+double odometer::getDistance(){
 	return distance;
 }
 
-float odometer::getWheelSize(){
+double odometer::getWheelSize(){
 	return wheelSize;
 }
 	
