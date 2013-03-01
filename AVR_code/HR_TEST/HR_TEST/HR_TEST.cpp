@@ -312,7 +312,7 @@ void initHRSensing(){
 
 WORD GetADC(){
 	//Disable global interrupts; declare variables.
-	//cli();
+	//cli();		//GLOBAL INTERRUPTS ALREADY DISABLED
 	volatile WORD ADCreading=0;
 	volatile static unsigned int reps=0;
 	
