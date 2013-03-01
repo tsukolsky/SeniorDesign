@@ -43,7 +43,8 @@ class odometer{
 		void setOdometerTime(unsigned int sDate, unsigned int sTime, unsigned int timeElapsed);
 		\*******************/
 		void setWheelSize(float wheelSize);
-		void addDataPoint(unsigned int newDataPoint);
+		void addSpeedDataPoint(unsigned int newDataPoint);
+		void resetSpeedPoints();
 		
 		//Get functions for normal odometer stuff
 		unsigned int getSpeedPoints();
@@ -55,15 +56,14 @@ class odometer{
 		unsigned int getTotalTime(unsigned int eTime, unsigned int eDate);
 		
 	private:
-		float aveSpeed, distance, currentSpeed,wheelSize,speedWeight;
+		double aveSpeed, distance, currentSpeed,wheelSize,speedWeight;
 		unsigned int sDate,sTime,eTime,eDate;	//may not need these, need to look into implementation
 		unsigned int timeElapsed;
 		unsigned int dataPoints[10];
 		unsigned int speedPoints;	//number of speed points
-		BOOL firstRun;
-		void updateStats();
+		BOOL firstRun, noSpeed;
+		void updateSpeeds();
 		void resetOdometer();
-		
 };
 
 //For new odometer, initialize everything
@@ -75,6 +75,7 @@ odometer::odometer(){
 //How we reset odometer. Everyting is reset except WHEEL SIZE, that's done by the calling function.
 void odometer::resetOdometer(){
 	firstRun=fTrue;
+	noSpeed=fFalse;
 	aveSpeed=0;
 	distance=0;
 	currentSpeed=0;
@@ -83,7 +84,7 @@ void odometer::resetOdometer(){
 	sDate=0;
 	sTime=0;
 	timeElapsed=0;
-	for (int i=0; i<10; i++){
+	for (volatile int i=0; i<10; i++){
 		dataPoints[i]=0;
 	}
 }
@@ -118,24 +119,37 @@ void odometer::setOdometer(float swapAveSpeed, float swapDistance, float swapCur
 }
 
 //New speed data point
-void odometer::addDataPoint(unsigned int newDataPoint){
+void odometer::addSpeedDataPoint(unsigned int newDataPoint){
 	//If this is first point or new wheelsize, or whatever, need to initialize all data points.
-	if (firstRun){
-		for (int j=0; j<10;j++){
+	if (firstRun || noSpeed){
+		for (volatile int j=0; j<10;j++){
 			dataPoints[j]=newDataPoint;
 		}
-		firstRun=fFalse;				//reset flag
+		firstRun=fFalse;				//reset flags
+		noSpeed=fFalse;
+	//Normal data point. shift back and add new one.
 	} else {
 		//Shift data back one
-		for (int i=0; i<9; i++){
+		for (volatile int i=0; i<9; i++){
 			dataPoints[i]=dataPoints[i+1];	//shift down by one
 		}
 		dataPoints[9]=newDataPoint;		//add new data point
 	}
 	speedPoints++;					//increment speed points
+	distance+=wheelSize;			//increment distance.
 
 	//With new point we need to update all the statistics.
-	updateStats();
+	updateSpeeds();
+}
+
+//The speed went to zero. Need to set flag for startup condition on new speed point, set currentSpeed to 0 so that if we are updating screen
+//it won't display old speed, but 0. Reset all speed points.
+void odometer::resetSpeedPoints(){
+	noSpeed=fTrue;
+	currentSpeed=0;
+	for (volatile int i=0; i<10; i++){
+		dataPoints[i]=0;
+	}
 }
 
 //Updating wheel size. Don't reset anything, but initialize first run to eliminate old speeds. 
@@ -145,16 +159,14 @@ void odometer::setWheelSize(float wheelSize){
 }
 
 //Just got another data point, update all the statistics
-void odometer::updateStats(){
-	//Update distance
-	distance += wheelSize;
-	
+void odometer::updateSpeeds(){
+
 	//Update current speed
 	unsigned int sum;
-	for (int i=0; i<10; i++){
-		sum += dataPoints[i]/10;
+	for (volatile int i=0; i<10; i++){
+		sum += dataPoints[i];
 	}
-	currentSpeed=SECONDS_IN_HOUR*wheelSize/(sum*TIMER1_CLOCK_sec);
+	currentSpeed=10.0*SECONDS_IN_HOUR*wheelSize/(sum*TIMER1_CLOCK_sec);		//calculate and update currentSpeed.
 	
 	//Update average speed
 	__calculateSpeedWeight();
