@@ -19,7 +19,7 @@ GAVR_reCycle.d GAVR_reCycle.o: .././GAVR_reCycle.cpp \
  c:\program\ files\ (x86)\atmel\atmel\ studio\ 6.0\extensions\atmel\avrgcc\3.4.1.95\avrtoolchain\bin\../lib/gcc/avr/4.6.2/../../../../avr/include/string.h \
  c:\program\ files\ (x86)\atmel\atmel\ studio\ 6.0\extensions\atmel\avrgcc\3.4.1.95\avrtoolchain\bin\../lib/gcc/avr/4.6.2/../../../../avr/include/avr/eeprom.h \
  .././stdtypes.h .././myTime.h .././myDate.h .././eepromSaveRead.h \
- .././ATmegaXX4PA.h
+ .././ATmegaXX4PA.h .././myUart.h
 
 c:\program\ files\ (x86)\atmel\atmel\ studio\ 6.0\extensions\atmel\avrgcc\3.4.1.95\avrtoolchain\bin\../lib/gcc/avr/4.6.2/../../../../avr/include/inttypes.h:
 
@@ -68,3 +68,5 @@ c:\program\ files\ (x86)\atmel\atmel\ studio\ 6.0\extensions\atmel\avrgcc\3.4.1.
 .././eepromSaveRead.h:
 
 .././ATmegaXX4PA.h:
+
+.././myUart.h:

@@ -2,14 +2,30 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 2/12/13
-| Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
+| Last Revised: 3/4/13
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
-| Description: 
+| Description: This is the main .cpp for the Graphics AVR for the Bike Computer
+|			System. The initial implementation only had a real-time clock and is
+|			being built up to final release where it will drive an LCD screen, 
+|			measure HR using a touch circuit, measure speed with a reed switch
+|			, and keep track of Trips. For more information and code for development
+|			modules contact Todd Sukolsky at tsukolsky@gmail.com.
 |--------------------------------------------------------------------------------
-| Revisions:
+| Revisions: 2/12- Initial Build. Demoing on ATmega644PA. Final implementation is ATmega2560
+|			 2/xx- Integrated RTC, started wtih startup procedures. Tried to get
+|				   communication from WAVR working, not quite right. Did get simple
+|				   back and forth talking with BeagleBone working.
+|			 3/4- Implemented state machine to receive strings from WAVR, next is 
+|				  to get communication with Bone working and Trip storage management.
+|				  Moved all UART transmissions and receive protocols to an external
+|				  file "myUart.h".
+|				  
 |================================================================================
-| *NOTES:
+| *NOTES: (1) This document is stored in the GIT repo @ https://github.com/tsukolsky/SeniorDesign.git/AVR_CODE/GAVR.
+|			  Development is also going on in that same repo ../HR_TEST for heart
+|			  rate sensing and speed detection using a reed swithc. Trip features
+|			  are also being tested in that module.
 \*******************************************************************************/
 
 using namespace std;
@@ -27,29 +43,30 @@ using namespace std;
 #include "myTime.h"			//myTime class, includes the myDate.h inherently
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
 #include "ATmegaXX4PA.h"
+#include "myUart.h"
 
+//Defines for Frequency and Baud Rates
 #define FOSC 20000000
 #define BAUD 9600
 #define MYUBRR FOSC/16/BAUD -1	//declares Baud Rate for UART
+
+//Implementations for interrupt resets and sets
+#define __disableLevel1INT() PCMSK0 = 0x00; EIMSK=0x00;		//disable any interrupt that might screw up reception. Keep the clock ticks going though
+#define __enableLevel1INT() PCMSK0 |= (1 << PCINT0); EIMSK |= (1 << INT2);
+
 
 void DeviceInit();
 void AppInit(unsigned int ubrr);
 void EnableRTCTimer();
 void Wait_ms(volatile int delay);
 void Wait_sec(volatile int delay);
-void PutUartChBone(char ch);
-void PrintBone(char string[]);
-void PrintWAVR(char string[]);
-void PutUartChWAVR(char ch);
-void ReceiveWAVR();
 void SendToWAVR(BOOL sTime=fFalse, BOOL sDate=fFalse);
 void SendToBone();
 void ReceiveBone();
-void printTimeDate(BOOL WAVRorBone=fTrue, BOOL pTime=fFalse, BOOL pDate=fFalse);
 
 //Flags
-volatile BOOL justStarted,flagUARTWAVR, flagUARTBone, flagGetUserDate, flagGetUserTime, flagSendTimeToWAVR, flagSendDateToWAVR;
-volatile BOOL flagWaitingForWAVR, flagWaitingForBone;
+BOOL justStarted,flagUARTWAVR, flagUARTBone, flagGetUserDate, flagGetUserTime, flagSendTimeToWAVR, flagSendDateToWAVR;
+BOOL flagWaitingForWAVR, flagWaitingForBone;
 
 //Global Variables
 volatile int startUpTimeout=0;
@@ -81,8 +98,8 @@ ISR(INT2_vect){
 		cli();
 		flagWaitingForWAVR=fTrue;
 		UCSR1B |= (1 << RXCIE1);	//enable receiver 1
-		PCMSK0 =0x00;
-		EIMSK=0x00;				//disable all PCINTs
+		PCMSK0=0x00;
+		EIMSK=0x00;					//disable all PCINTs
 		PrintWAVR("ACKW");			//Ack from GAVR
 		sei();
 		debounceNumber=0;
@@ -95,21 +112,19 @@ ISR(TIMER2_OVF_vect){
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
 	//Timeout functionality
-	
-	//If the UART flags for teh bone are up, increment timer. Same for WAVR
-	if (flagUARTBone || flagWaitingForBone){BONEtimeout++;}
-	if (flagUARTWAVR || flagWaitingForWAVR){WAVRtimeout++;}
-	
-	//If WAVR timoute is reached (10 seconds) and one of the flags is still up, reset the timeout, bring flags down and enable interrupt pins again
-	if ((WAVRtimeout > 9) && (flagUARTWAVR || flagWaitingForWAVR)){WAVRtimeout=0; flagUARTWAVR=fFalse; flagWaitingForWAVR=fFalse; PCMSK0 |=(1 << PCINT0); EIMSK = (1 << INT2);}
+			
+	//If WAVR timout is reached (10 seconds) and one of the flags is still up, reset the timeout, bring flags down and enable interrupt pins again		
+	if (WAVRtimeout <=3 && (flagUARTWAVR || flagWaitingForWAVR)){WAVRtimeout++;}
+	else if ((WAVRtimeout > 3) && (flagUARTWAVR || flagWaitingForWAVR)){WAVRtimeout=0; flagUARTWAVR=fFalse; flagWaitingForWAVR=fFalse; PCMSK0 |=(1 << PCINT0); EIMSK = (1 << INT2);}
 	else if (!flagUARTWAVR && !flagWaitingForWAVR && WAVRtimeout > 0){WAVRtimeout=0;}	//Both flags aren't set, make sure the timeout is 0
-	else {asm volatile("nop");}
+	else;
 	
-	if ((BONEtimeout>9) && (flagUARTBone || flagWaitingForBone)){BONEtimeout=0; flagUARTBone=fFalse; flagWaitingForBone=fFalse; EIMSK = (1 << INT2); PCMSK0 |= (1 << PCINT0);}
+	if (BONEtimeout <=3 && (flagUARTBone || flagWaitingForBone)){BONEtimeout++;}	
+	else if (BONEtimeout > 3 && (flagUARTBone || flagWaitingForBone)){BONEtimeout=0; flagUARTBone=fFalse; flagWaitingForBone=fFalse; EIMSK = (1 << INT2); PCMSK0 |= (1 << PCINT0);}
 	else if (!flagUARTBone && !flagWaitingForBone && BONEtimeout >0){BONEtimeout=0;}
-	else {asm volatile("nop");}
-	//If we just started, increment the startUpTimeout value. When it hits 30, logic goes into place for user to enter time and date
+	else;
 	
+	//If we just started, increment the startUpTimeout value. When it hits 30, logic goes into place for user to enter time and date
 	if (justStarted){startUpTimeout++; if (startUpTimeout>35) {justStarted=fFalse;}}//take out that second if inside for final implemenation.
 	else if (!justStarted);
 	else;
@@ -160,15 +175,13 @@ int main(void)
 			prtDEBUGleds |= (1 << bnWAVRCOMMled);
 			ReceiveWAVR();
 			prtDEBUGleds &= ~(1 << bnWAVRCOMMled);
-			if (!flagUARTBone){PCMSK0 |= (1 << PCINT0); EIMSK=(1 << INT2);}		//re-enable interrupts if not receiving from bone. Shouldn't skip this 
-			flagUARTWAVR=fFalse;
 		}
+		
 		//Receiving from the Bone. Could be a number of things. Needs to implement a state machine.
 		if (flagUARTBone){
 			prtDEBUGleds |= (1 << bnBONECOMMled);
 			ReceiveBone();
 			prtDEBUGleds &= ~(1 << bnBONECOMMled);
-			if (!flagUARTWAVR){PCMSK0 |= (1 << PCINT0); EIMSK=(1 << INT2);}
 			flagUARTBone=fFalse;
 		}			
 		
@@ -293,118 +306,6 @@ void Wait_sec(volatile int delay){
 	volatile int startingTime = currentTime.getSeconds();
 	volatile int endingTime= (startingTime+delay)%60;
 	while (currentTime.getSeconds() != endingTime){asm volatile ("nop");}
-}
-
-/*************************************************************************************************************/
-
-void PutUartChBone(char ch)
-{
-	while (! (UCSR0A & (1 << UDRE0)));
-	UDR0 = ch;
-}
-
-/*************************************************************************************************************/
-void PrintBone(char string[])
-{	
-	volatile BYTE i;
-	i = 0;
-
-	while (string[i]) {
-		PutUartChBone(string[i]);  //send byte		
-		i += 1;
-	}
-}
-
-/*************************************************************************************************************/
-void PutUartChWAVR(char ch)
-{
-	while (! (UCSR1A & (1 << UDRE1)));
-	UDR1 = ch;
-}
-
-/*************************************************************************************************************/
-void PrintWAVR(char string[])
-{
-	volatile BYTE i;
-	i = 0;
-
-	while (string[i]) {
-		PutUartChWAVR(string[i]);  //send byte
-		i += 1;
-	}
-}
-
-/*************************************************************************************************************/
-//Only two things should ever be transmitted to this device. The Time or the request for the user to set date.If the
-//request for user to set date happens
-void ReceiveWAVR(){
-	volatile static int numberOfTimeErrors=0; //we have three chances to transmit the time correctly, then we ahve user enter data.
-	char recString[10];
-	char recChar;
-	int strLoc=0;
-	BOOL noCarriage=fTrue;
-	//Get character from UDR0
-	recChar=UDR1;
-	if (recChar=='.'){
-		PrintWAVR("R.");	//signal resend
-		noCarriage=fFalse;
-	} else {
-		recString[strLoc++]=recChar;
-	}
-	while (noCarriage && flagUARTWAVR){
-		//Get next character
-		while (!(UCSR1A & (1 << RXC1)) && flagUARTWAVR);
-		recChar=UDR1;
-		if (recChar=='.'){
-			recString[strLoc]='\0';			//Null Terminate
-			noCarriage=fFalse;				//gets out of while loop
-			if (!strcmp(recString,"date")){printTimeDate(fFalse,fFalse,fTrue);} //printing to WAVR, UART1
-			else if (!strcmp(recString,"time")){printTimeDate(fFalse,fTrue,fFalse);} //printing to WAVR
-			else if (!strcmp(recString,"both")){printTimeDate(fFalse,fTrue,fTrue);} //printing to WAVR
-			//If Date, WAVR needs date, set flag to ask user for date  and then send to AVR
-			else if (!strcmp(recString,"DATE")){flagGetUserDate=fTrue; flagSendDateToWAVR=fTrue; PrintWAVR("ACK"); PrintWAVR(recString); PutUartChWAVR('.');}
-			//We are getting a time, need to make sure only [1] or [2] is a colon, then parse
-			else if ((recString[1]==':') != (recString[2]==':')){
-				int tempNum[3]={0,0,0}, hms=0, placement=0;
-				//Look at string for all locations up to \0, \0 is needed to know when last digits are done
-				char tempStringNum[3];
-				for (int i=0; i<= strLoc; i++){
-					//temporary string that holds a number, new one for each 
-					//If the character isn't a colon, we haven't gotten 3 int values, and character isn't eof, add to tempStringNum
-					if (recString[i]!=':' && hms<3 && recString[i]!='\0'){
-						tempStringNum[placement++]=recString[i];
-					//If haven't gotten 3 int's and character is colon, store int(stringNum) into tempNum[<current time param>]	
-					} else if (hms<2 && recString[i] == ':') {
-						tempNum[hms++] = atoi(tempStringNum);
-						for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}	//reset the string
-						placement=0;												//reset placement
-					//If we haven't found 3 int values and current Location is at end, and end char is null, save as second
-					} else if (hms<3 && (recString[i]=='\0' || i==strLoc)){
-						tempNum[hms] = atoi(tempStringNum);
-						hms++;	//goes to three, nothing should happen.
-					}
-				}
-				//Make sure the settings are okay before setting the time. If and issue and number of errors is >3, ask user for time
-				if (tempNum[0]/24==0 && tempNum[1]/60==0 && tempNum[2]/60==0){
-					currentTime.setTime(tempNum[0],tempNum[1],tempNum[2]);
-					saveDateTime_eeprom(fTrue,fFalse);
-					char tempTime[20];
-					strcpy(tempTime,currentTime.getTime());
-					PrintWAVR("ACK");
-					PrintWAVR(tempTime);
-					PutUartChWAVR('.');
-					numberOfTimeErrors=0;
-					if (justStarted){justStarted=fFalse;}	//lower just started flag 
-				} else if (++numberOfTimeErrors>2){PrintWAVR("ACKERROR."); flagGetUserTime=fTrue;flagSendTimeToWAVR=fTrue;}
-				else {PrintWAVR("ACKnogood"); PrintWAVR(recString); PutUartChWAVR('.');}
-			}			
-		//Didn't get terminator, put string into buffer
-		} else {
-			recString[strLoc] = recChar;
-			strLoc++;
-			if (strLoc >= 19){strLoc = 0; noCarriage = fFalse; flagUARTWAVR=fFalse; PrintWAVR("ACKR.");}			
-		}	
-	}
 }
 
 /*************************************************************************************************************/
@@ -611,31 +512,3 @@ void ReceiveBone(){
 	char throwAwaychar=UDR0;	//make sure it's clear.
 }
 /*************************************************************************************************************/
-//To print to WAVR, cariable needs to be false. Print to Bone requires WAVRorBone to be true
-void printTimeDate(BOOL WAVRorBone, BOOL pTime,BOOL pDate){
-	if (WAVRorBone){ //Printing to BeagleBone
-		if (pTime){
-			char tempTime[11];
-			strcpy(tempTime,currentTime.getTime());
-			PrintBone(tempTime);
-			PutUartChBone('/');
-		}
-		if (pDate){	
-			char tempDate[17];
-			strcpy(tempDate,currentTime.getDate());
-			PrintBone(tempDate);
-		}
-	} else { //Printing to GAVR
-		if (pTime){
-			char tempTime[11];
-			strcpy(tempTime,currentTime.getTime());
-			PrintWAVR(tempTime);
-			PutUartChWAVR('/');
-		}
-		if (pDate){
-			char tempDate[17];
-			strcpy(tempDate,currentTime.getDate());
-			PrintWAVR(tempDate);
-		}
-	}
-}
