@@ -62,29 +62,39 @@ class heartMonitor{
 		double getAveHR();
 		double getCurrentHR();
 		unsigned int getNumReadings();
+	
+	protected: 
+		void hardResetHR();
 		
 	private:
 		double aveHR, currentHR, hrWeight;
 		unsigned int numReadings;
+		void softResetHR();
 		
 };
 
 heartMonitor::heartMonitor(){
-	aveHR=0;
-	numReadings=0;
-	__calculateHRWeight();
-	resetMonitor();
+	hardReset();
 }
 
-//Resets everythin except number of readings and aveHR
-void heartMonitor::resetMonitor(){
+//Resets everythin
+void heartMonitor::hardResetHR(){
 	currentHR=0;
+	numReadings=0;
+	aveHR=0;
+	__calculateHRWeight();
+}
+
+//Resets everything except AVEHR and Num readings.
+void heartMonitor::softResetHR(){
+	currentHR=0;
+	__calculateHRWeight();
 }
 
 void heartMonitor::setHeartMonitor(double aveHR, unsigned int numReadings){
 	this->aveHR=aveHR;
 	this->numReadings=numReadings;
-	resetMonitor();
+	softReset();
 }
 
 void heartMonitor::setAveHR(double aveHR){

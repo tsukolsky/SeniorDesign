@@ -27,7 +27,10 @@ using namespace std;
 
 class trip: public odometer, public heartMonitor{
 	public:
-		trip();		
+		trip();	
+		void resetTrip();
+		void setTripWOTime(double wheelSize);
+		void setTripWTime(double wheelSize,unsigned int sDate, unsigned int sTime);
 		
 };
 
@@ -36,5 +39,16 @@ trip::trip():odometer(), heartMonitor(){
 	//Do nothing in this, only important because it's a mix of heartMonitor and odometer.
 }
 
+trip::resetTrip(){
+	resetOdometer();
+	hardResetHR();
+}
 
+void trip::setTripWOTime(double wheelSize){
+	setNewOdometerWOtime(wheelSize);
+}
+
+void trip::setTripWTime(double wheelSize, unsigned int sDate, unsigned int sTime){
+	setNewOdometerWtime(wheelSize, sDate, sTime);
+}
 

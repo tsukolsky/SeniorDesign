@@ -102,7 +102,6 @@ void odometer::setNewOdometerWtime(double wheelSize, unsigned int sDate, unsigne
 	this->sDate=sDate;
 	this->sTime=sTime;
 	resetOdometer();
-	
 }
 
 //Restart of the module, need to set everything.
