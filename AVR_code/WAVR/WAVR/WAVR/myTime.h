@@ -2,7 +2,7 @@
 | myTime.h
 | Author: Todd Sukolsky
 | Initial Build: 1/29/2013
-| Last Revised: 1/30/2013
+| Last Revised: 3/4/2013
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the Time class that will keep the realTimeClock. it is in 24
@@ -15,6 +15,7 @@
 |					  --Need to put saveEEPROm and getEEPROm functions in a header for this 
 |						to use along with main, otherwise this has to include main which
 |						isnt good.
+|				3/4- Added checkValidity() thing to ensure good communiction/error checking.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -39,6 +40,8 @@ class myTime : public myDate{
 		void setSecond(int second);
 		void addSeconds(int seconds);
 		const char * getTime();
+		BOOL checkValidity();
+		
 	private:
 		volatile int hour,minute,second;
 		char timeString[11];
@@ -140,6 +143,14 @@ void myTime::addSeconds(int seconds){
 		volatile int minutesToAdd = (tempSecond)/60;		  //if seconds = 120, adds two minutes
 		addMinutes(minutesToAdd);					  //add to minutes
 	}
+}
+
+BOOL myTime::checkValidity(){
+	BOOL stillValid=fTrue;
+	if (second/60==0 && minute/60==0 && hour/24==0){
+		if (checkValidityDate()){return fTrue;}
+	}
+	return fFalse;
 }
 
 const char * myTime::getTime(){

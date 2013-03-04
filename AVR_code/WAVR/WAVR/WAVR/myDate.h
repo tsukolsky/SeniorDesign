@@ -2,13 +2,15 @@
 | myDate.h
 | Author: Todd Sukolsky
 | Initial Build: 1/29/2013
-| Last Revised: 1/30/2013
+| Last Revised: 3/4/2013
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: Stores current date
 |--------------------------------------------------------------------------------
 | Revisions:1/29- Initial build.
 |			1/30- Added get functions for month,day,year.
+|			3/4- Added checkValidityDate() function for troubleshooting and error
+|				 checking.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -29,6 +31,7 @@ class myDate{
 		
 	protected:
 		void addDays(int days);
+		BOOL checkValidityDate();
 		
 	private:
 		volatile int month,day,year;	
@@ -140,7 +143,25 @@ void myDate::addDays(int days){
 			day = tempDays%32;
 		}
 	}
-	
+}
+
+BOOL myDate::checkValidityDate(){
+	BOOL checkYear=fFalse;
+	if (month/13==0){
+			if ((month == 9 || month == 4 || month == 6) && day/31 == 0){
+				checkYear=fTrue;
+			} else if (month == 2 && day/29 == 0){
+				checkYear=fTrue;
+			} else{
+				if (day/32 == 0){
+					checkYear=fTrue;
+				}
+			}
+			
+			//Check year
+			if (checkYear && year>=2013){return fTrue;}
+			else {return fFalse;}
+	} else {return fFalse;}
 }
 
 const char * myDate::getDate(){

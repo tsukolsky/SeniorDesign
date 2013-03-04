@@ -64,6 +64,9 @@ using namespace std;
 #define __killPeriphPow() {prtENABLE &= ~((1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)); prtBBen &= ~(1 << bnBBen);}
 #define __powPeriph() {prtENABLE |= ((1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)); prtBBen |= (1 << bnBBen);}
 
+#define __killLevel1INT() {EIMSK=0x00; PCMSK0=0x00;}
+#define __enableLevel1INT() {EIMSK|= (1 << INT2);}
+	
 //Forward Declarations
 void DeviceInit();
 void AppInit(unsigned int ubrr);
@@ -74,16 +77,47 @@ void Wait_sec(volatile int sec);
 void GoToSleep(BOOL shortOrLong);
 void TakeADC();
 void GetTemp();
-void SendTimeDateGAVR(BOOL sTime=fFalse, BOOL sDate=fFalse);
 
-//Global Variables
-volatile BOOL flagGoToSleep, flagUARTbone,flagNormalMode,flagUserTime, flagUserDate;
-volatile BOOL flagUpdateGAVRTime, flagUpdateGAVRDate, noTimeout;
-BOOL flagSendingGAVR;
-volatile BOOL flagNewShutdown, flagShutdown,flagGoodTemp, flagGoodVolts, restart,flagFreshStart;
+/*********************************************GLOBAL VARIABLES***************************************************/
+/****************************************************************************************************************/
 volatile WORD globalADC=0, globalTemp=0;
 //volatile int timeOut=0;
 myTime currentTime;  //The clock, MUST BE GLOBAL. In final program, will initiate with NOTHING, then GPS will update on the actual time into beaglebone, beaglebone pings us, then dunzo OR have UART into this as well, then get time and be done.
+/****************************************************************************************************************/
+
+
+/*********************************************GLOBAL FLAGS*******************************************************/
+/****************************************************************************************************************/
+/*==============================================================================================================*/
+volatile BOOL flagGoToSleep, flagUARTbone,flagNormalMode;
+/* flagGoToSleep: go to sleep on end of while(fTrue) loop														*/
+/* flagUARTbone: receiving info from the bone																	*/
+/* flagNormalMode: normal mode of operation, take ADC and temp readings											*/
+/*==============================================================================================================*/
+
+
+/*==============================================================================================================*/
+BOOL flagUpdateGAVRTime, flagUpdateGAVRDate, flagSendingGAVR, flagUserDate, flagUserTime, flagInvalidDateTime, flagWaitingToSendGAVR;
+/* flagUpdateGAVRtime: got a new time in from GPS, update GAVR													*/
+/* flagUpdateGAVRDate: restart with correct date, send to GAVR	---obsolete since we always send time with date */
+/* flagSendingGAVR: currently sending info to GAVR																*/
+/* flagUserDate: WAVR doesn't have a good lock on time, tell GAVR to get from user								*/
+/* flagUserTime: WAVR doesn't have a good lock on time, tell GAVR to get from user								*/
+/* flagInvalidDateTime: the time/date we have currently is wrong/invalid										*/
+/* flagWaitingToSendGAVR: Unsuccessful transmission first time, let other things know we are waiting.			*/
+/*==============================================================================================================*/
+
+/*==============================================================================================================*/
+volatile BOOL flagNewShutdown, flagShutdown,flagGoodTemp, flagGoodVolts, restart, flagFreshStart;
+/* flagNewShutdown: We are about to shut down because somethign is off (temp and/or ADC)						*/
+/* flagShutdown: we are in shutdown mode																		*/
+/* flagGoodTemp: temperature reading is below the maximum value													*/
+/* flagGoodVolts: ADC reading on batt is above the minimum value												*/
+/* restart:	we just came out of shutdown, but not a fresh start. Send date and time to GAVR						*/
+/* flagFreshStart: brand new starting sequence																	*/
+/*==============================================================================================================*/
+/****************************************************************************************************************/
+
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 ISR(PCINT0_vect){
@@ -97,6 +131,7 @@ ISR(INT2_vect){	//about to get time, get things ready
 		UCSR0B |= (1 << RXCIE0);
 		flagGoToSleep=fFalse;	//no sleeping, wait for UART_RX
 		flagNormalMode=fFalse;
+		__killLevel1INT();
 		//Acknowledge connection, disable INT2_vect
 		PrintBone("ACKT");
 	}	
@@ -104,13 +139,27 @@ ISR(INT2_vect){	//about to get time, get things ready
 
 ISR(TIMER2_OVF_vect){
 	volatile static int timeOut = 0;
-	volatile static int gavrTimeout=0;
+	volatile static int gavrSendTimeout=0;
 	
 	currentTime.addSeconds(1);
+	
+	//GAVR Transmission Timeout
+	if (flagSendingGAVR && gavrSendTimeout <=3){gavrSendTimeout++;}
+	else if (flagSendingGAVR && gavrSendTimeout > 3){flagSendingGAVR=fFalse; gavrSendTimeout=0;__enableLevel1INT();}
+	else if (!flagSendingGAVR && gavrSendTimeout > 0){gavrSendTimeout=0;}
+	else;
+	
+	/*//BeagleBone Reception Timeout
+	if (flagReceivingBone && boneReceiveTimout <=3){boneReceiveTimeout++;}
+	else if (flagReceivingBone && boneReceiveTimeout > 3){flagReceivingBone=fFalse; boneReceiveTimeout=0;__enableLevel1INT();}
+	else if (!flagReceivingBone && boneRecieveTimeout > 0){boneReceiveTimeout=0;}
+	else;
+	*/
+	
 	if ((flagUARTbone == fTrue || flagGoToSleep == fFalse) && !flagNewShutdown && !restart){ //if waiting for a character in Receive0() or in main program without sleep
 		timeOut++;
 		if (timeOut >= 6){
-			EIMSK |= (1 << INT2);		//re-enable INT2
+			__enableLevel1INT();
 			flagUARTbone = fFalse;
 			flagGoToSleep = fTrue;
 			flagNormalMode=fTrue;
@@ -119,15 +168,12 @@ ISR(TIMER2_OVF_vect){
 	} else if (timeOut > 0){
 		timeOut = 0;
 	} else;
-	/* This doesnt work
-	if (flagSendingGAVR){gavrTimeout++;}
-	if (gavrTimeout>10 && flagSendingGAVR){noTimeout=fFalse; flagSendingGAVR=fFalse;gavrTimeout=0;}
-	else; 	*/
+
 }
 
 ISR(USART0_RX_vect){
 	UCSR0B &= ~(1 << RXCIE0);
-	EIMSK=0x00;
+	__killLevel1INT();
 	flagUARTbone=fTrue;
 	flagNormalMode=fFalse;
 }
@@ -149,25 +195,23 @@ int main(void)
 	TakeADC();
 	if (flagGoodVolts && flagGoodTemp){__powPeriph();flagFreshStart=fTrue;}
 	else {flagNormalMode=fTrue;flagFreshStart=fFalse;}
+		
 	//main programming loop
 	while(fTrue)
 	{				
 		//If receiving UART string, go get rest of it.
 		if (flagUARTbone){
-			EIMSK=0;
-			ReceiveBone();
+				ReceiveBone();
 			flagUARTbone = fFalse; 
 			//PCIMSK |= (1 << PCINT0);
-			EIMSK = (1 << INT2);											//enable INT2 interrupt vector again.
+			__enableLevel1INT();
 			flagGoToSleep = fTrue;
 			flagNormalMode=fTrue;
 		}
 	
-		if (flagUpdateGAVRTime || flagUpdateGAVRDate){
-			//kill INT2, updating GAVR
-			EIMSK=0x00;
-			//SendTimeDateGAVR(flagUpdateGAVRTime,flagUpdateGAVRDate);
-			EIMSK = (1 << INT2);
+		if (flagUpdateGAVRTime || flagUpdateGAVRDate || flagUserDate || flagUserTime){
+			sendGAVR();
+			__enableLevel1INT();
 		}
 
 		//When to save to EEPROM. Saves time on lower half of the hour, saves data and time on lower half-hour of midday.
@@ -228,7 +272,7 @@ int main(void)
 		
 		//If Restart, broadcast date and time to BeagleBone and other AVR
 		if (restart){
-			EIMSK = (1 << INT2);	//enable BONE interrupt. Will come out with newest time. Give it 10 seconds to kill
+			__enableLevel1INT();	//enable BONE interrupt. Will come out with newest time. Give it 10 seconds to kill
 			__powPeriph();
 			//Check to see if pins are ready. Use timeout of 10 seconds for pins to come high.
 			int waitTime = 0;
@@ -314,13 +358,23 @@ void AppInit(unsigned int ubrr){
 	
 	//Init variables
 	flagGoToSleep = fTrue;			//changes to fTrue in final implementation
-	flagShutdown  = fFalse;
 	flagUARTbone = fFalse;
 	flagNormalMode=fTrue;
+
+	flagUpdateGAVRTime=fFalse;
+	flagUpdateGAVRDate=fFalse;
+	flagSendingGAVR=fFalse;
+	flagUserTime=fFalse;
+	flagUserDate=fFalse;
+	flagInvalidDateTime=fFalse;
+	flagWaitingToSendGAVR=fFalse;
+	
 	restart=fFalse;
 	flagNewShutdown=fFalse;
-	flagSendingGAVR=fFalse;
-	noTimeout=fTrue;
+	flagShutdown  = fFalse;
+	flagGoodVolts=fFalse;
+	flagGoodTemp=fFalse;
+	flagFreshStart=fTrue;
 }
 /*************************************************************************************************************/
 void EnableRTCTimer(){
@@ -536,107 +590,7 @@ void GetTemp(){
 	globalTemp=rawTemp;
 }
 /*************************************************************************************************************/
-//10 second timeout for this.
-void SendTimeDateGAVR(BOOL sTime, BOOL sDate){
-	flagSendingGAVR=fTrue;
-	prtSLEEPled |= (1 << bnSLEEPled);
-	volatile int state=0;
-	BOOL communicating=fTrue;
-	noTimeout=fTrue;
-	volatile int beginningSecond=currentTime.getSeconds();
-	volatile int endingSecond=(10+beginningSecond)%60;
-	char sentString[30];	//string that was sent, need it for error checking
-	//Make sure we should be sending something
-	if (sTime || sDate){communicating=fTrue;}
-	else {communicating=fFalse;}
-	//Main sending  loop
-	while(communicating && noTimeout){
-		switch(state){
-			case 0:{
-				//Send interrupt to GAVR, wait for  ACKW
-				prtGAVRINT |= (1 << bnGAVRINT);
-				for (volatile int i=0; i<2;i++){asm volatile("nop");}	
-				prtGAVRINT &= ~(1 << bnGAVRINT);
-				//Wait for ACK now
-				state=1;
-			} case 1: {
-				char recChar, recString[30];
-				volatile int strLoc=0;
-				BOOL noCarriage=fTrue;
-				//We sent an interrupt, need to get an ACKW back now.
-				while (noCarriage && noTimeout){
-					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
-					recChar=UDR1;
-					if (recChar=='.'){
-						recString[strLoc]='\0';
-						noCarriage=fFalse; //get out of loop
-						if (!strcmp(recString,"ACKW")){//Good to send time and/or date. send and go to next state.
-							state=2;
-							if (sTime && sDate){
-								printTimeDate(fFalse,fTrue,fTrue);
-								PutUartChGAVR('.');
-								strcpy(sentString,currentTime.getTime());
-								strcat(sentString,"/");
-								strcat(sentString,currentTime.getDate());
-							} else if (sTime && !sDate){
-								printTimeDate(fFalse,fTrue,fFalse);
-								PutUartChGAVR('.');
-								strcpy(sentString,currentTime.getTime());
-								strcat(sentString,"/");
-							} else {
-								printTimeDate(fFalse,fFalse,fTrue);
-								PutUartChGAVR('.');
-								strcpy(sentString,currentTime.getDate());
-							}													
-						} else {state=0;}
-					} //endif carriage
-					else {
-						recString[strLoc++]=recChar;
-						if (strLoc >= 30){strLoc=0; noCarriage=fFalse; state=0;}
-					} //end normal char else
-				} //end receiving part
-				break;//end case 1
-			} case 2: { //Need to get ACK with the date and/or time.
-				char recString[30];
-				char recChar;
-				volatile int strLoc=0;
-				BOOL noCarriage=fTrue;
-				char noGoodString[30];
-				strcpy(noGoodString,"ACKnogood");
-				strcat(noGoodString,sentString);
-				//get the ack
-				while (noCarriage && noTimeout){
-					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
-					recChar=UDR1;
-					if (recChar=='.'){
-						recString[strLoc]='\0';
-						noCarriage=fFalse;
-						if (!strcmp(recString,sentString)){communicating=fFalse;}
-						else if (!strcmp(recString,noGoodString)){state=0;} //retry the send
-						else if (!strcmp(recString,"ACKERROR")){communicating=fFalse; flagUpdateGAVRDate=fFalse; flagUpdateGAVRTime=fFalse;} //major error, User is going to get date and time and then send it back to this WAVR												 
-						
-						else {state=0;}
-					} else {
-						recString[strLoc++]=recChar;
-						if (strLoc > 30){strLoc=0; state=0; noCarriage=fFalse;}
-					}
-				}
-				break;
-			} //end case 2
-			default: {state=0; break;}
-		} //end switch
-	if (beginningSecond != endingSecond){noTimeout=fTrue;}
-	else {noTimeout=fFalse;}
-	}//end communicationg	
-	if (noTimeout){
-		if (sDate && sTime){flagUpdateGAVRDate=fFalse; flagUpdateGAVRTime=fFalse;}
-		else if (sDate && !sTime){flagUpdateGAVRDate=fFalse;}
-		else if (sTime && !sDate){flagUpdateGAVRTime=fFalse;}
-		else;
-	} else;
-	prtSLEEPled &= ~(1 << bnSLEEPled);
-	flagSendingGAVR=fFalse;			
-} //end function
+
 
 
 /*--------------------------END-Public Funtions--------------------------------------------------------------------------------*/
