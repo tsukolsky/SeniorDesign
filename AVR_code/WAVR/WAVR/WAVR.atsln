@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 11.00
 # Atmel Studio Solution File, Format Version 11.00
-Project("{E66E83B9-2572-4076-B26E-6BE79FF3018A}") = "RTC", "RTC\RTC.cppproj", "{1249DF64-C9FA-4DE9-85FD-06205C6F58D4}"
+Project("{E66E83B9-2572-4076-B26E-6BE79FF3018A}") = "WAVR", "WAVR\WAVR.cppproj", "{C5E715BE-FF45-4E31-B9C6-18873ABA71BF}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -9,10 +9,10 @@ Global
 		Release|AVR = Release|AVR
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{1249DF64-C9FA-4DE9-85FD-06205C6F58D4}.Debug|AVR.ActiveCfg = Debug|AVR
-		{1249DF64-C9FA-4DE9-85FD-06205C6F58D4}.Debug|AVR.Build.0 = Debug|AVR
-		{1249DF64-C9FA-4DE9-85FD-06205C6F58D4}.Release|AVR.ActiveCfg = Release|AVR
-		{1249DF64-C9FA-4DE9-85FD-06205C6F58D4}.Release|AVR.Build.0 = Release|AVR
+		{C5E715BE-FF45-4E31-B9C6-18873ABA71BF}.Debug|AVR.ActiveCfg = Debug|AVR
+		{C5E715BE-FF45-4E31-B9C6-18873ABA71BF}.Debug|AVR.Build.0 = Debug|AVR
+		{C5E715BE-FF45-4E31-B9C6-18873ABA71BF}.Release|AVR.ActiveCfg = Release|AVR
+		{C5E715BE-FF45-4E31-B9C6-18873ABA71BF}.Release|AVR.Build.0 = Release|AVR
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

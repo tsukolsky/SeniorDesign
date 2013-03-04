@@ -1,8 +1,8 @@
-/*******************************************************************************\
-| RTC.cpp
+/*******************************************************************************************\
+| WAVR.cpp
 | Author: Todd Sukolsky
 | Initial Build: 1/28/2013
-| Last Revised: 1/31/13
+| Last Revised: 3/4/13
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main.cpp file for the RTC to be implemented on the 
@@ -45,6 +45,7 @@ using namespace std;
 #include "ATmegaXX4PA.h"	//holds bit definitions
 #include "myTime.h"			//myTime class, includes the myDate.h inherently
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
+#include "myUart.h"
 
 //USART/BAUD defines
 #define FOSC 20000000		//20 MHz
@@ -54,11 +55,11 @@ using namespace std;
 
 //Sleep and Run Timing constants
 #define SLEEP_TICKS_HIGHV	10				//sleeps for 20 seconds when battery is good to go
-#define SLEEP_TICKS_LOWV	60				//sleeps for 60 seconds when battery voltage is low, running on backup.
+#define SLEEP_TICKS_LOWV	12				//sleeps for 60 seconds when battery voltage is low, running on backup.
 
 //ADC and Temp defines
 #define LOW_BATT_ADC 300    //change
-#define HIGH_TEMP	 1001023	//change
+#define HIGH_TEMP	 12900	//~99 celcius
 
 #define __killPeriphPow() {prtENABLE &= ~((1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)); prtBBen &= ~(1 << bnBBen);}
 #define __powPeriph() {prtENABLE |= ((1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)); prtBBen |= (1 << bnBBen);}
@@ -67,52 +68,68 @@ using namespace std;
 void DeviceInit();
 void AppInit(unsigned int ubrr);
 void EnableRTCTimer();
-void Print0(char string[]);
-void Receive0();
-void PutUart0Ch(char ch);
-void Wait_ms(volatile WORD delay);
-void printTimeDate(BOOL pTime = fFalse, BOOL pDate = fFalse);
+void ReceiveBone();
+void Wait_ms(volatile int delay);
+void Wait_sec(volatile int sec);
 void GoToSleep(BOOL shortOrLong);
-BOOL TakeADC();
-BOOL GetTemp();
+void TakeADC();
+void GetTemp();
+void SendTimeDateGAVR(BOOL sTime=fFalse, BOOL sDate=fFalse);
 
 //Global Variables
-volatile BOOL flagGoToSleep, flagUART_RX, flagSecondLevel, flagGettingTime; //*******
-volatile BOOL flagNewShutdown, flagShutdown,flagGoodTemp, flagGoodVolts, restart;
+volatile BOOL flagGoToSleep, flagUARTbone,flagNormalMode,flagUserTime, flagUserDate;
+volatile BOOL flagUpdateGAVRTime, flagUpdateGAVRDate, noTimeout;
+BOOL flagSendingGAVR;
+volatile BOOL flagNewShutdown, flagShutdown,flagGoodTemp, flagGoodVolts, restart,flagFreshStart;
+volatile WORD globalADC=0, globalTemp=0;
+//volatile int timeOut=0;
 myTime currentTime;  //The clock, MUST BE GLOBAL. In final program, will initiate with NOTHING, then GPS will update on the actual time into beaglebone, beaglebone pings us, then dunzo OR have UART into this as well, then get time and be done.
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
+ISR(PCINT0_vect){
+	
+	
+}	
 
-ISR(INT2_vect){	//about to get asked for date or time, get ready
-	if (!flagShutdown){
-		flagGoToSleep = fFalse;	//no sleeping, wait for UART_RX
+
+ISR(INT2_vect){	//about to get time, get things ready
+	if (!flagShutdown){		//If things are off, don't let noise do an interrupt. Shouldn't happen anyways.
+		UCSR0B |= (1 << RXCIE0);
+		flagGoToSleep=fFalse;	//no sleeping, wait for UART_RX
+		flagNormalMode=fFalse;
 		//Acknowledge connection, disable INT2_vect
-		EIMSK &= ~(1 << INT2);			//disable INT2 global interrupt
-		Print0("ACKT"); //*******
+		PrintBone("ACKT");
 	}	
 }
 
 ISR(TIMER2_OVF_vect){
 	volatile static int timeOut = 0;
+	volatile static int gavrTimeout=0;
+	
 	currentTime.addSeconds(1);
-	if (flagUART_RX == fTrue || flagGoToSleep == fFalse){ //if waiting for a character in Receive0() or in main program without sleep
+	if ((flagUARTbone == fTrue || flagGoToSleep == fFalse) && !flagNewShutdown && !restart){ //if waiting for a character in Receive0() or in main program without sleep
 		timeOut++;
-		if (timeOut >= 10){
-			EIMSK = (1 << INT2);		//re-enable INT2
-			flagUART_RX = fFalse;
+		if (timeOut >= 6){
+			EIMSK |= (1 << INT2);		//re-enable INT2
+			flagUARTbone = fFalse;
 			flagGoToSleep = fTrue;
-			Print0("TO."); //take this out in final implementation
+			flagNormalMode=fTrue;
 			timeOut = 0;
 		}
 	} else if (timeOut > 0){
 		timeOut = 0;
-	} 	
+	} else;
+	/* This doesnt work
+	if (flagSendingGAVR){gavrTimeout++;}
+	if (gavrTimeout>10 && flagSendingGAVR){noTimeout=fFalse; flagSendingGAVR=fFalse;gavrTimeout=0;}
+	else; 	*/
 }
 
 ISR(USART0_RX_vect){
-	UCSR0B &= ~(1 << RXCIE0);		//disable receive interrupt vector
-	flagUART_RX = fTrue;
-	flagSecondLevel = fFalse;
+	UCSR0B &= ~(1 << RXCIE0);
+	EIMSK=0x00;
+	flagUARTbone=fTrue;
+	flagNormalMode=fFalse;
 }
 
 /*--------------------------END-Interrupt Service Routines--------------------------------------------------------------------------------*/
@@ -123,31 +140,38 @@ int main(void)
 	//Setup
 	DeviceInit();
 	AppInit(MYUBRR);
-	//Prep/make sure power/temp is good
-	//GetTemp();
-	TakeADC();
-	if (flagGoodVolts && flagGoodTemp){__powPeriph();}
-	else {restart = fFalse;}
-	//Start normal functionality
 	EnableRTCTimer();
-	getDateTime_eeprom(fTrue,fTrue);			//Load the last saved values in EEPROM
+	getDateTime_eeprom(fTrue,fTrue);
 	sei();
+	//Prep/make sure power/temp is good
+	GetTemp();
+	//flagGoodTemp=fTrue;
+	TakeADC();
+	if (flagGoodVolts && flagGoodTemp){__powPeriph();flagFreshStart=fTrue;}
+	else {flagNormalMode=fTrue;flagFreshStart=fFalse;}
 	//main programming loop
 	while(fTrue)
 	{				
 		//If receiving UART string, go get rest of it.
-		if (flagUART_RX){
-			Receive0();
-			if (flagGettingTime){beagleReceiveTime();} //********
-			flagUART_RX = fFalse;
-			UCSR0B |= (1 << RXCIE0);										//enable receive interrupt vector
-			EIMSK |= (1 << INT2);											//enable INT2 interrupt vector again.
-			flagSecondLevel = fTrue;
+		if (flagUARTbone){
+			EIMSK=0;
+			ReceiveBone();
+			flagUARTbone = fFalse; 
+			//PCIMSK |= (1 << PCINT0);
+			EIMSK = (1 << INT2);											//enable INT2 interrupt vector again.
 			flagGoToSleep = fTrue;
+			flagNormalMode=fTrue;
 		}
 	
+		if (flagUpdateGAVRTime || flagUpdateGAVRDate){
+			//kill INT2, updating GAVR
+			EIMSK=0x00;
+			//SendTimeDateGAVR(flagUpdateGAVRTime,flagUpdateGAVRDate);
+			EIMSK = (1 << INT2);
+		}
+
 		//When to save to EEPROM. Saves time on lower half of the hour, saves data and time on lower half-hour of midday.
-		if (flagSecondLevel){
+		if (flagNormalMode){
 			if (currentTime.getMinutes()%30 == 0){
 				if (currentTime.getHours()%12 == 0){
 					saveDateTime_eeprom(fTrue,fTrue);
@@ -158,11 +182,12 @@ int main(void)
 		}
 		
 		//Take ADC reading to check battery level, temp to check board temperature.
-		if (flagSecondLevel){
+		if (flagNormalMode){
 			TakeADC();
-			//GetTemp();
+			GetTemp();
 			//If both are good & shutodwn is low, keep it low. If shutdown is high, pull low and enable restart
 			if (flagGoodVolts && flagGoodTemp){
+				__powPeriph();
 				if( flagShutdown == fTrue){restart = fTrue;}
 				flagShutdown = fFalse;
 			//If one is bad and shutdown is low, pull high as well as pull new shutdown high to indicate imminent power kill
@@ -175,7 +200,11 @@ int main(void)
 		}			
 		
 		//About to shutdown, save EEPROM
-		if (flagNewShutdown && flagSecondLevel){
+		if (flagNewShutdown){
+			//Make sure nothing messes with the routine that we care about
+			EIMSK = 0;
+			flagGoToSleep = fTrue;
+			flagUARTbone = fFalse;
 			saveDateTime_eeprom(fTrue,fTrue);
 			
 			//Alert BeagleBone and Graphics AVR that powerdown is imminent=> raise SHUTDOWN PINS for 3 clk cycles
@@ -187,7 +216,7 @@ int main(void)
 			}
 			
 			//Five seconds for processing to finish on other chips
-			Wait_ms(3000);		
+			Wait_sec(6);	
 			
 			prtBBleds &= ~((1 << bnBBint)|(1 << bnBBtemp));
 			prtGAVRleds &= ~((1 << bnGAVRint)|(1 << bnGAVRtemp));
@@ -199,29 +228,20 @@ int main(void)
 		
 		//If Restart, broadcast date and time to BeagleBone and other AVR
 		if (restart){
+			EIMSK = (1 << INT2);	//enable BONE interrupt. Will come out with newest time. Give it 10 seconds to kill
 			__powPeriph();
 			//Check to see if pins are ready. Use timeout of 10 seconds for pins to come high.
-			int waitPeriod = 0;
-			BOOL noTimeOut = fTrue;
-			/*while (!(PINx & ((1 << bnX)|(1 << bnX)) && noTimeOut){
-				if (++waitPeriod > 25){noTimeOut = fFalse;}
-				Wait_ms(400);
-			};*/ 
-			if (noTimeOut){
-				Wait_ms(5000);			//this gets taken out
-				/*alert BB and GAVR that update is coming*/
-				Print0("R.");
-				Wait_ms(5);
-				printTimeDate(fTrue,fTrue);			
-				restart = fFalse;
-			}
-			//If we get to here, the flag is not reset so it will go to sleep and on the next cycle it's awake it will try and 
-			//send the tiem and date again, same routine.			
+			int waitTime = 0;
+			while (waitTime < 3 && restart){waitTime++; Wait_sec(1);}
+			flagUpdateGAVRDate=fTrue;
+			flagUpdateGAVRTime=fTrue;
+			//If we get to here, the flag is not reset or there was a timeout. If timout, goes to sleep and on the next cycle it's awake it will try and 
+			//get an updated date and time from the BeagleBone. Always update GAVR.			
 		}		
 		
 			
 		//If it's time to go to sleep, go to sleep. INT0 or TIM2_overflow will wake it up.
-		if (flagGoToSleep && flagSecondLevel){GoToSleep(flagShutdown);}
+		if (flagGoToSleep){GoToSleep(flagShutdown);}
 					
 	}
 	
@@ -255,7 +275,7 @@ void AppInit(unsigned int ubrr){
 	//Enable UART_TX0 and UART_RX0
 	UCSR0B = (1 << TXEN0)|(1 << RXEN0);
 	UCSR0C = (1 << UCSZ01)|(1 << UCSZ00);							//Asynchronous; 8 data bits, no parity
-	UCSR0B |= (1 << RXCIE0);										//enable receive interrupt vector
+	//UCSR0B |= (1 << RXCIE0);
 	
 	//Disable power to all peripherals
 	PRR0 |= (1 << PRTWI)|(1 << PRTIM2)|(1 << PRTIM0)|(1 << PRUSART1)|(1 << PRTIM1)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
@@ -270,29 +290,37 @@ void AppInit(unsigned int ubrr){
 	ddrBBleds |= (1 << bnBBint)|(1 << bnBBtemp);
 	ddrGAVRleds |= (1 << bnGAVRint)|(1 << bnGAVRtemp);
 	
+	//Enable GAVR interrupt pin, our PB3, it's INT2
+	ddrGAVRINT |= (1 << bnGAVRINT);
+	prtGAVRINT &=  ~(1 << bnGAVRINT);	//set low at first
+	
 	//Enable enable signals
 	ddrENABLE |= (1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen);
 	ddrBBen |= (1 << bnBBen);
 	ddrTEMPen |= (1 << bnTEMPen);
+	prtTEMPen |= (1 << bnTEMPen);
+	
+
 	
 	//Enable INT2. Note* Pin change interrupts will NOT wake AVR from Power-Save mode. Only INT0-2 will.
-	EICRA = (1 << ISC21);			//falling edge of INT2 enables interrupt
+	EICRA = (1 << ISC21)|(1 << ISC20);			//falling edge of INT2 enables interrupt
 	EIMSK = (1 << INT2);			//enable INT2 global interrupt
 	
 	//Enable SPI for TI temperature
 	ddrSpi0 |= (1 << bnMosi0)|(1 << bnSck0)|(1 << bnSS0);	//outputs
+	ddrSpi0 &= ~(1 << bnMiso0);
 	prtSpi0 |= (1 << bnSS0)|(1 << bnSck0);		//keep SS and SCK high
-	prtSpi0 &= ~((1 << bnMiso0)|(1 << bnMosi0));		//keep Miso low
-	SPCR |= (1 << MSTR)|(1 << SPE)|(1 << SPR1);			//enables SPI, master, fck/64
+	prtSpi0 &= ~(1 << bnMosi0);		//keep Miso low
 	
 	//Init variables
 	flagGoToSleep = fTrue;			//changes to fTrue in final implementation
 	flagShutdown  = fFalse;
-	flagUART_RX = fFalse;
-	flagSecondLevel = fTrue;
-	restart = fTrue;
-	
-	flagGoodTemp = fTrue;
+	flagUARTbone = fFalse;
+	flagNormalMode=fTrue;
+	restart=fFalse;
+	flagNewShutdown=fFalse;
+	flagSendingGAVR=fFalse;
+	noTimeout=fTrue;
 }
 /*************************************************************************************************************/
 void EnableRTCTimer(){
@@ -313,113 +341,90 @@ void EnableRTCTimer(){
 	//Away we go
 }
 /*************************************************************************************************************/
-void Wait_ms(volatile WORD delay)
+void Wait_ms(volatile int delay)
 {
-	volatile WORD i;
+	volatile int i;
 
 	while(delay > 0){
-		for(i = 0; i < 600; i++){
+		for(i = 0; i < 800; i++){
 			asm volatile("nop");
 		}
 		delay -= 1;
 	}
 }
-
 /*************************************************************************************************************/
-
-void PutUart0Ch(char ch)
-{
-	while (! (UCSR0A & (1 << UDRE0)) ) { asm volatile("nop"); }
-	UDR0 = ch;
+void Wait_sec(volatile int sec){
+	volatile int startingTime = currentTime.getSeconds();
+	volatile int endingTime= (startingTime+sec)%60;
+	while (currentTime.getSeconds() != endingTime){asm volatile ("nop");}
 }
 
 /*************************************************************************************************************/
-void Print0(char string[])
-{	
-	BYTE i;
-	i = 0;
-
-	while (string[i]) {
-		PutUart0Ch(string[i]);  //send byte		
-		i += 1;
-	}
-}
-
-/*************************************************************************************************************/
-void Receive0(){
+void ReceiveBone(){
 	//Declare variables
-	volatile BOOL noCarriage = fTrue;
+	BOOL noCarriage = fTrue;
 	char recString[20];
 	char recChar;
 	volatile int strLoc = 0;
 	
-	recChar = UDR0;	//get initial 
-	if (recChar == '.'){
-			PutUart0Ch(recChar);
-			noCarriage = fFalse;
+	recChar = UDR0;
+	if (recChar=='.'){
+		PutUartChBone(recChar);
+		noCarriage=fFalse;
 	} else {
-		recString[strLoc] = recChar;
+		recString[strLoc]=recChar;
 		strLoc++;
 	}
-	while (noCarriage && flagUART_RX){ //flag goes down if a timeout occurs.
-		//Wait to get next character
-		while (!(UCSR0A & (1 << RXC0)) && flagUART_RX);
+	while (noCarriage && flagUARTbone){ //flag goes down if a timeout occurs.
+		recChar=UDR0; //dump, don't needit. wait for nextone
+		while (!(UCSR0A & (1 << RXC0)) && flagUARTbone);
 		recChar = UDR0;
 		//Put string together. Carriage return is dunzo.
 		if (recChar == '.'){
 			recString[strLoc] = '\0';
-			noCarriage = fFalse;
 			//See what it's asking for
-			if (!strcmp(recString,"date")){printTimeDate(fFalse,fTrue);}
-			else if (!strcmp(recString,"time")){printTimeDate(fTrue,fFalse);}
-			else if (!strcmp(recString,"both")){printTimeDate(fTrue,fTrue);}
-			else if (!(strcmp(recString,"NONE")){Print0("ACKNONE"); flagGettingTime=fFalse;} //****
-			else {Print0(recString);}
-			break;
+			if (!strcmp(recString,"date")){printTimeDate(fTrue,fFalse,fTrue);}
+			else if (!strcmp(recString,"time")){printTimeDate(fTrue,fTrue,fFalse);}
+			else if (!strcmp(recString,"both")){printTimeDate(fTrue,fTrue,fTrue);}
+			else if (!strcmp(recString,"save")){saveDateTime_eeprom(fTrue,fFalse);PrintBone(recString);}
+			else if (!strcmp(recString,"adc")){char tempChar[7]; itoa(globalADC,tempChar,10); tempChar[6]='\0'; PrintBone(tempChar);}
+			else if (!strcmp(recString,"temp")){char tempChar[7]; itoa(globalTemp,tempChar,10); tempChar[6]='\0'; PrintBone(tempChar);}
+			else if (!strcmp(recString,"NONE") && (restart || flagFreshStart)){ //If we are starting up again, we need to alert GAVR and clear the flags
+				PrintBone("ACKNONE");
+				if (flagFreshStart){flagFreshStart=fFalse;}
+				if (restart){restart=fFalse;}
+				flagUserTime=fTrue;
+				flagUserDate=fTrue;
+			} else if (recString[2] == ':'){//valid string. Update the time anyways. Comes in every 20 minutes or so...
+				cli();
+				BOOL success=currentTime.setTime(recString);
+				sei();
+				if (restart){restart=fFalse;} 
+				if (flagFreshStart){flagFreshStart=fFalse;}
+				PrintBone("ACK");
+				if (success && !restart && !flagFreshStart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRTime=fTrue; PrintBone(recString);}
+				else if (success && !restart && flagFreshStart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRTime=fTrue; flagUserDate=fTrue; PrintBone(recString);}
+				else if (success && restart && !flagFreshStart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRDate=fTrue; flagUpdateGAVRTime=fTrue; PrintBone(recString);}
+				else if (!success && restart){flagUpdateGAVRTime=fTrue; flagUpdateGAVRDate=fTrue; PrintBone("bad");}	//sends eeprom time and date
+				else if (!success && flagFreshStart){flagUserTime=fTrue; flagUserDate=fTrue; PrintBone("bad");} //need to get user time and date
+				else {PrintBone("bad");}
+				//Reset flags for startup
+				if (restart){restart=fFalse;}
+				if (flagFreshStart){flagFreshStart=fFalse;}		
+			} else {
+				PrintBone("ACK"); 
+				PrintBone(recString);
+			}
+			noCarriage = fFalse;
 		} else {
-			recString[strLoc] = recChar;
-			strLoc++;
-			if (strLoc >= 19){strLoc = 0; noCarriage = fFalse;}
+			recString[strLoc++] = recChar;
+			if (strLoc >= 19){strLoc = 0; noCarriage = fFalse; PrintBone("ACKERROR");}
 		}	
 	}	
 }
-/*************************************************************************************************************/
-void beagleReceiveTime(){
-	volatile BOOL noCarriage = fTrue;
-	char recString[10];
-	char recChar;
-	volatile int strLoc=0;
-	while (noCarriage && flagUART_RX){
-		while (!(UCSROA & (1 << RXC0)) && flagUART_RX);
-		recChar = UDR0;
-		if (recChar=='.'){
-			recString[strLoc]='\0';
-			noCarriage=fFalse;
-			if (!strcmp(recString,"NONE")){//pull date and time from EEPROM
-				
-				Print0("ACKNONE");	//reply with what we got.
-		{
-	}
-}
 
 /*************************************************************************************************************/
 
-void printTimeDate(BOOL pTime,BOOL pDate){
-	if (pTime){
-		char tempTime[11];
-		strcpy(tempTime,currentTime.getTime());
-		Print0(tempTime);
-	}
-	if (pDate){
-		if (pTime){
-			Print0(", ");
-		}		
-		char tempDate[17];
-		strcpy(tempDate,currentTime.getDate());
-		Print0(tempDate);
-	}
-	Print0(". ");
-}
 /*************************************************************************************************************/
 
 void GoToSleep(BOOL shortOrLong){
@@ -428,8 +433,10 @@ void GoToSleep(BOOL shortOrLong){
 		//If bool is true, we are in low power mode/backup, sleep for 60 seconds then check ADC again
 		if (shortOrLong == fTrue){
 			sleepTime = SLEEP_TICKS_LOWV;
+			EIMSK = 0;						//no int2
 		} else {
 			sleepTime = SLEEP_TICKS_HIGHV;
+			EIMSK |= (1 << INT2);			//int2 is allowed.
 		}
 		//Turn off status LED, put on TIM2 led
 		prtSTATUSled &= ~(1 << bnSTATUSled);
@@ -448,7 +455,7 @@ void GoToSleep(BOOL shortOrLong){
 		} //endwhile
 		
 		//Give it time to power back on
-		Wait_ms(1);
+		Wait_ms(10);
 		
 		//Done sleeping, turn off sleeping led
 		prtSLEEPled &= ~(1 << bnSLEEPled);
@@ -456,7 +463,7 @@ void GoToSleep(BOOL shortOrLong){
 }
 /*************************************************************************************************************/
 
-BOOL TakeADC(){
+void TakeADC(){
 	WORD adcReading = 0;
 	
 	cli();
@@ -474,6 +481,9 @@ BOOL TakeADC(){
 	adcReading = ADCL;
 	adcReading |= (ADCH << 8);
 	
+	//Re-enable interrupts
+	sei();
+	
 	//Disable ADC hardware/registers
 	ADCSRA = 0;
 	ADMUX = 0;
@@ -482,45 +492,151 @@ BOOL TakeADC(){
 	//Turn off power
 	PRR0 |= (1 << PRADC);
 	
-	//Re-enable interrupts
-	sei();
-	
 	//Do work
 	Wait_ms(5);
 
 	flagGoodVolts = (adcReading < LOW_BATT_ADC) ? fFalse : fTrue;
+	
+	globalADC=adcReading;
 }
 
 /*************************************************************************************************************/
 
-BOOL GetTemp(){
+void GetTemp(){
 	WORD rawTemp = 0;
 	
 	//Power on temp monitor, let it settle
-	prtTEMPen |= (1 << bnTEMPen);
-	Wait_ms(20);
+	//prtTEMPen |= (1 << bnTEMPen);
+	PRR0 &= ~(1 << PRSPI);	
+	SPCR0 |= (1 << MSTR0)|(1 << SPE0)|(1 << SPR00);			//enables SPI, master, fck/64
+	Wait_ms(200);
+	//Slave select goes low, sck goes low,  to signal start of transmission
+	prtSpi0 &= ~((1 << bnSck0)|(1 << bnSS0));
 	
-	//Turn SPI on
-	PRR0 &= ~(1 << PRSPI);
-	Wait_ms(5);
-	
-	//Slave select goes low to signal start of transmission
-	prtSpi0 &= ~(1 << bnSS0);
-	
-	//Write to buffer
-	UDR0 = 0x00;
-	
-	//Wit for data to be receieved.
-	while (!(UCSR0A & (1 << RXC0)));
-	rawTemp = (UDR0 << 8);
-	UDR0 = 0x00;
-	while (!(UCSR0A & (1 << RXC0)));
-	rawTemp |= UDR0;
-	
-	//Turn off temp monitor
-	prtTEMPen &= ~(1 << bnTEMPen);
+	cli();
+	//Write to buffer to start transmission
+	SPDR0 = 0x00;
+	//Wait for data to be receieved.
+	while (!(SPSR0 & (1 << SPIF0)));
+	rawTemp = (SPDR0 << 8);
+	SPDR0 = 0x00;
+	while (!(SPSR0 & (1 << SPIF0)));
+	rawTemp |= SPDR0;
 	//Set flag to correct value.
-	flagGoodTemp = (rawTemp < HIGH_TEMP) ? fFalse : fTrue;
+	flagGoodTemp = (rawTemp < HIGH_TEMP) ? fTrue : fFalse;
+	//re enable interrupts
+	sei();
+	
+	//Bring SS high, clear SPCR0 register and turn power off to SPI and device
+	prtSpi0 |= (1 << bnSS0)|(1 << bnSck0);
+	SPCR0=0x00;	
+	//prtTEMPen &= ~(1 << bnTEMPen);
+	PRR0 |= (1 << PRSPI);
+
+	globalTemp=rawTemp;
 }
+/*************************************************************************************************************/
+//10 second timeout for this.
+void SendTimeDateGAVR(BOOL sTime, BOOL sDate){
+	flagSendingGAVR=fTrue;
+	prtSLEEPled |= (1 << bnSLEEPled);
+	volatile int state=0;
+	BOOL communicating=fTrue;
+	noTimeout=fTrue;
+	volatile int beginningSecond=currentTime.getSeconds();
+	volatile int endingSecond=(10+beginningSecond)%60;
+	char sentString[30];	//string that was sent, need it for error checking
+	//Make sure we should be sending something
+	if (sTime || sDate){communicating=fTrue;}
+	else {communicating=fFalse;}
+	//Main sending  loop
+	while(communicating && noTimeout){
+		switch(state){
+			case 0:{
+				//Send interrupt to GAVR, wait for  ACKW
+				prtGAVRINT |= (1 << bnGAVRINT);
+				for (volatile int i=0; i<2;i++){asm volatile("nop");}	
+				prtGAVRINT &= ~(1 << bnGAVRINT);
+				//Wait for ACK now
+				state=1;
+			} case 1: {
+				char recChar, recString[30];
+				volatile int strLoc=0;
+				BOOL noCarriage=fTrue;
+				//We sent an interrupt, need to get an ACKW back now.
+				while (noCarriage && noTimeout){
+					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
+					recChar=UDR1;
+					if (recChar=='.'){
+						recString[strLoc]='\0';
+						noCarriage=fFalse; //get out of loop
+						if (!strcmp(recString,"ACKW")){//Good to send time and/or date. send and go to next state.
+							state=2;
+							if (sTime && sDate){
+								printTimeDate(fFalse,fTrue,fTrue);
+								PutUartChGAVR('.');
+								strcpy(sentString,currentTime.getTime());
+								strcat(sentString,"/");
+								strcat(sentString,currentTime.getDate());
+							} else if (sTime && !sDate){
+								printTimeDate(fFalse,fTrue,fFalse);
+								PutUartChGAVR('.');
+								strcpy(sentString,currentTime.getTime());
+								strcat(sentString,"/");
+							} else {
+								printTimeDate(fFalse,fFalse,fTrue);
+								PutUartChGAVR('.');
+								strcpy(sentString,currentTime.getDate());
+							}													
+						} else {state=0;}
+					} //endif carriage
+					else {
+						recString[strLoc++]=recChar;
+						if (strLoc >= 30){strLoc=0; noCarriage=fFalse; state=0;}
+					} //end normal char else
+				} //end receiving part
+				break;//end case 1
+			} case 2: { //Need to get ACK with the date and/or time.
+				char recString[30];
+				char recChar;
+				volatile int strLoc=0;
+				BOOL noCarriage=fTrue;
+				char noGoodString[30];
+				strcpy(noGoodString,"ACKnogood");
+				strcat(noGoodString,sentString);
+				//get the ack
+				while (noCarriage && noTimeout){
+					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
+					recChar=UDR1;
+					if (recChar=='.'){
+						recString[strLoc]='\0';
+						noCarriage=fFalse;
+						if (!strcmp(recString,sentString)){communicating=fFalse;}
+						else if (!strcmp(recString,noGoodString)){state=0;} //retry the send
+						else if (!strcmp(recString,"ACKERROR")){communicating=fFalse; flagUpdateGAVRDate=fFalse; flagUpdateGAVRTime=fFalse;} //major error, User is going to get date and time and then send it back to this WAVR												 
+						
+						else {state=0;}
+					} else {
+						recString[strLoc++]=recChar;
+						if (strLoc > 30){strLoc=0; state=0; noCarriage=fFalse;}
+					}
+				}
+				break;
+			} //end case 2
+			default: {state=0; break;}
+		} //end switch
+	if (beginningSecond != endingSecond){noTimeout=fTrue;}
+	else {noTimeout=fFalse;}
+	}//end communicationg	
+	if (noTimeout){
+		if (sDate && sTime){flagUpdateGAVRDate=fFalse; flagUpdateGAVRTime=fFalse;}
+		else if (sDate && !sTime){flagUpdateGAVRDate=fFalse;}
+		else if (sTime && !sDate){flagUpdateGAVRTime=fFalse;}
+		else;
+	} else;
+	prtSLEEPled &= ~(1 << bnSLEEPled);
+	flagSendingGAVR=fFalse;			
+} //end function
+
 
 /*--------------------------END-Public Funtions--------------------------------------------------------------------------------*/
