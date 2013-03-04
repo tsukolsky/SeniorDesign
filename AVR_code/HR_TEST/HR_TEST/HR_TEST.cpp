@@ -29,9 +29,9 @@ using namespace std;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <avr/io.h>
 #include "stdtypes.h"
 #include "trip.h"
+#include "uartSend.h"
 
 #define prtLED PORTC
 #define ddrLED DDRC
@@ -43,7 +43,12 @@ using namespace std;
 
 #define BAD_SPEED_THRESH 4
 #define CALC_SPEED_THRESH 3		//at 20MPH, 4 interrupts take 1 second w/clk, should be at least every second
-#define MINIMUM_HR_THRESH 400
+#define MINIMUM_HR_THRESH 400	//
+#define MAXIMUM_HR_THRESH 700	//seen in testing it usually doesn't go more than 100 above or below 512 ~ 1.67V
+
+#define NUM_MS	1				//4 ms
+#define ONE_MS 0xFF			//32 ticks on 8MHz/256 is 1ms
+
 
 //Baud/UART defines
 #define FOSC 8000000
@@ -56,23 +61,20 @@ void initHRSensing();
 void initSpeedSensing();
 WORD GetADC();
 void Wait_ms(volatile int delay);
-void PutUart0Ch(char ch);
-void Print0(char string[]);
+
 void powerDown();
 
 //Globals
 //IBI=ms inbetween beats; BPM=beats per minute; signal =adc reading. P=peak, T=trough, thresh=threshold, amp=amplitude
 volatile WORD numberOfSpeedOverflows=0;
-volatile unsigned int BPM, IBI;
-volatile BOOL QS=fFalse, flagUpdateUserStats=fFalse, flagNoSpeed=fTrue, dead=fFalse;
-volatile WORD N=0;
-volatile BOOL firstBeat=fTrue, secondBeat=fTrue, pulse=fFalse;
-volatile WORD rate[10];
+volatile BOOL QS=fFalse, flagNoSpeed=fTrue, dead=fFalse;
+BOOL flagUpdateUserStats=fFalse;
 
 //Global trip 
 trip globalTrip;
 
-//ISR
+
+/*-------------------------------------------------------------------ISR------------------------------------------------------------------------------*/
 ISR(TIMER1_OVF_vect){
 	cli();
 	//Check to see if we are going to slow to care.
@@ -125,7 +127,7 @@ ISR(INT0_vect){
 }
 
 
-//Toggled every 4ms roughly. 1/(8MHz/128/248)
+//Toggled every 4ms roughly. 1/(8MHz/128/248) * 2
 ISR(TIMER0_COMPA_vect){
 	cli();
 	//Declare variables
@@ -135,14 +137,18 @@ ISR(TIMER0_COMPA_vect){
 	//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
 	N+=4;
 	signal = GetADC();		//retrieves ADC reading on ADC0
-	if (signal > MINIMUM_HR_THRESH){
-		globalTrip.newHRSample(signal, N);
+	if (signal > MINIMUM_HR_THRESH && signal < MAXIMUM_HR_THRESH){
+		globalTrip.newHRSample(signal, 4);
 		N=0;
 	}	
 
 	//Re-enable interrupts
 	sei();
 }
+
+/*-------------------------------------------------------------------END-ISR------------------------------------------------------------------------------*/
+
+/*-------------------------------------------------------------------MAIN---------------------------------------------------------------------------------*/
 
 //Main Program
 int main(void){
@@ -168,16 +174,18 @@ int main(void){
 			BPMstring[8]='.';
 			Print0("BPM:");
 			Print0(BPMstring);
-
+			PutUart0Ch('-');
+/*
 			//Calculate speed using data points.
 			speed = globalTrip.getCurrentSpeed();
 			dtostrf(speed,5,2,speedString);
 			speedString[6]='.';
 			speedString[7]='\0';
 			Print0("Speed:");
-			Print0(speedString);
+			Print0(speedString);*/
 			//Reset Flag
 			flagUpdateUserStats=fFalse;
+			//Wait_ms(1000);
 			sei();
 		}//end calc speed	
 		
@@ -189,6 +197,8 @@ int main(void){
 	}//end while True	
 	return 0;
 }//end main
+
+/*-------------------------------------------------------------------END-MAIN------------------------------------------------------------------------------*/
 
 /*************************************************************************************************************/
 void DeviceInit(){
@@ -214,7 +224,7 @@ void AppInit(unsigned int ubrr){
 	PRR |= (1 << PRTWI)|(1 << PRTIM2)|(1 << PRSPI);  //Turn off everything 
 
 	//Setup ADC
-	ADCSRA |= (1 << ADEN)|(1 << ADPS1)|(1 << ADPS0);		//enable ADC with clock division factor of 8
+	ADCSRA |= (1 << ADEN)|(1 << ADPS1);		//enable ADC with clock division factor of 8
 	ADMUX |= (1 << REFS0)|(1 << MUX1);		//internal 3.3V reference on AVCC, channel ADC2
 	
 	//Setup LED Blinking Port
@@ -240,8 +250,8 @@ void initSpeedSensing(){
 void initHRSensing(){
 	//Initialize timer 2, counter compare on TCNTA compare equals
 	TCCR0A = (1 << WGM01);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
-	TCCR0B = (1 << CS02)|(1 << CS00);	//clk/128
-	OCR0A = (0x7c)*2;						//248
+	TCCR0B = (1 << CS02);				//clk/256
+	OCR0A = ONE_MS*NUM_MS;					//Number of Milliseconds
 	TCNT0 = 0x00;						//Initialize
 	TIMSK0 = (1 << OCIE0A);			//enable OCIE2A
 }
@@ -253,25 +263,32 @@ WORD GetADC(){
 	//Disable global interrupts; declare variables.
 	//cli();		//GLOBAL INTERRUPTS ALREADY DISABLED
 	volatile WORD ADCreading=0;
-	volatile static unsigned int reps=0;
+	volatile static WORD reps=0;
 	
 	//Take two ADC readings, throw the first one out.
-	for (int i=0; i<2; i++){ADCSRA |= (1 << ADSC); while (ADCSRA & (1 << ADSC));} //does two
-
+	//for (int i=0; i<2; i++){ADCSRA |= (1 << ADSC); while (ADCSRA & (1 << ADSC));} //does two
+	ADCSRA |= (1 << ADSC);
+	while(ADCSRA & (1 << ADSC));
+	
 	//Get the last ADC reading.	
 	ADCreading = ADCL;
 	ADCreading |= (ADCH << 8);
 	
-	/*****Debugging******/
-	if (reps++>50){
+/*	if (reps++>500){
+		flagUpdateUserStats=fTrue;
+		reps=0;
+	}*/
+	/*****Debugging******
+	if (reps++>2){
 		char tempString[10];
 		utoa(ADCreading,tempString,10);
 		tempString[8]='-';	
 		tempString[9]='\0';
+		PutUart0Ch('-');
 		Print0(tempString);
 		reps=0;
 	}	
-	/********************/
+	********************/
 	
 	//Re-enable global interrupts. 
 	//sei();
@@ -289,19 +306,7 @@ void Wait_ms(volatile int delay){
 	}	
 }
 /*************************************************************************************************************/
-void PutUart0Ch(char ch){
-	while (!(UCSR0A & (1 << UDRE0)));
-	UDR0=ch;
-}
-/*************************************************************************************************************/
-void Print0(char string[]){
-	BYTE i=0;
-	
-	while (string[i]){
-		PutUart0Ch(string[i++]);
-	}
-}		
-/*************************************************************************************************************/
+
 void powerDown(){
 	cli();
 	SMCR = (1 << SM1);	//Power down.
