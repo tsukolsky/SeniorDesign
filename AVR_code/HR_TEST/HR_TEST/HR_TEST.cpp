@@ -12,9 +12,14 @@
 |				 I will. Then step is to integrate with existing GAVR code.
 |	     2/26: Got Speed Sensor working. Working on HR.
 |		  3/1: Moved HR Functionality/logic into "heartMonitor" class. See "heartMonitor.h"
+|		  3/3-4: Moved HR functionality around. Changed the data points to be in this
+|				 module instead of the other, passing by reference for actual data handling.
+|				 There are two new define statements to indicate the time (in ms) the interrupt
+|				 for HR will be fired. Currently 0xFF is ~ 8ms, for less than that change 
+|				 ONE_MS to 0x20 and then NUM_MS to however number of milliseconds desired.
 |	
 |================================================================================
-| *NOTES: (1) 87.96" distance travelled on normal 28" bicycle wheel speed = distance/time; 
+| *NOTES: (1) 87.96" distance traveled on normal 28" bicycle wheel speed = distance/time; 
 |             87.96" = .0013882576 miles 20mph/distance=14406= 1/time => time=249.88ms; One mph = 4.96 S=> 156,150 in counter = 2.4  
 |             Timer two because 8MHz/256=31.25kHz clock => .032ms per tick. => at 20mph, counter will hit ~7812.
 |
@@ -43,8 +48,8 @@ using namespace std;
 
 #define BAD_SPEED_THRESH 4
 #define CALC_SPEED_THRESH 3		//at 20MPH, 4 interrupts take 1 second w/clk, should be at least every second
-#define MINIMUM_HR_THRESH 400	//
-#define MAXIMUM_HR_THRESH 700	//seen in testing it usually doesn't go more than 100 above or below 512 ~ 1.67V
+#define MINIMUM_HR_THRESH 350	//
+#define MAXIMUM_HR_THRESH 800	//seen in testing it usually doesn't go more than 100 above or below 512 ~ 1.67V
 
 #define NUM_MS	1				//4 ms
 #define ONE_MS 0xFF			//32 ticks on 8MHz/256 is 1ms
@@ -69,6 +74,7 @@ void powerDown();
 volatile WORD numberOfSpeedOverflows=0;
 volatile BOOL QS=fFalse, flagNoSpeed=fTrue, dead=fFalse;
 BOOL flagUpdateUserStats=fFalse;
+unsigned int HRSAMPLES[300];
 
 //Global trip 
 trip globalTrip;
@@ -85,9 +91,9 @@ ISR(TIMER1_OVF_vect){
 	}
 
 	//SHow me that is happened with LED;
-	prtLED |= (1 << bnLED);
+	prtLED |= (1 << bnSPEEDLED);
 	Wait_ms(2);
-	prtLED &= ~(1 << bnLED);
+	prtLED &= ~(1 << bnSPEEDLED);
 	
 	sei();
 }
@@ -131,17 +137,15 @@ ISR(INT0_vect){
 ISR(TIMER0_COMPA_vect){
 	cli();
 	//Declare variables
-	WORD signal=0;
-	volatile static unsigned int N=0;
+	volatile WORD signal=0;
+	volatile static unsigned int location=0;
 	
 	//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
-	N+=4;
 	signal = GetADC();		//retrieves ADC reading on ADC0
-	if (signal > MINIMUM_HR_THRESH && signal < MAXIMUM_HR_THRESH){
-		globalTrip.newHRSample(signal, 4);
-		N=0;
-	}	
-
+	HRSAMPLES[location++]=signal;
+	if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300);}
+/*		
+		}}*/	
 	//Re-enable interrupts
 	sei();
 }
@@ -230,6 +234,10 @@ void AppInit(unsigned int ubrr){
 	//Setup LED Blinking Port
 	ddrLED |= (1 << bnLED)|(1 << bnSPEEDLED);
 	prtLED &= ~((1 << bnSPEEDLED)|(1 << bnLED));	//off initially.
+	
+	for (int i=0; i<200; i++){
+		HRSAMPLES[i]=0;
+	}	
 		
 }
 /*************************************************************************************************************/
