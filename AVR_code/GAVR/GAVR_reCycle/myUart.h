@@ -141,7 +141,6 @@ break;
 				currentTime.setTime(tempNum[0],tempNum[1],tempNum[2]);
 				saveDateTime_eeprom(fTrue,fFalse);
 				PrintWAVR(recString);
-				PutUartChWAVR('.');
 				if (justStarted){justStarted=fFalse;}	//lower just started flag
 			} else {
 				PrintWAVR("ACKBAD.");
@@ -180,6 +179,7 @@ void printTimeDate(BOOL WAVRorBone, BOOL pTime,BOOL pDate){
 		char tempDate[17];
 		strcpy(tempDate,currentTime.getDate());
 		PrintBone(tempDate);
+		PrintBone(".\0");
 	}
 } else { //Printing to GAVR
 if (pTime){
@@ -192,6 +192,7 @@ if (pDate){
 	char tempDate[17];
 	strcpy(tempDate,currentTime.getDate());
 	PrintWAVR(tempDate);
+	PrintWAVR(".\0");
 }
 	}
 }
