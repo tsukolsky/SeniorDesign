@@ -1,3 +1,9 @@
 GAVR Startup Flow
 =====================
-On startup, need to check to see if there is Trip data stored in EEPROM. There will be a number in some data field, staticly defined like the WAVR, that has the number of things. After loading this number the different data fields of certain trips will be a certain offset off. For example, (not good values), the number stored is 3 representing three trips that are stored. We need to look at another data field that represents whether that last trip was finished or not. If not finished, load the data that it's referring too => memory location 0+location*40+whichFIeld*8 where whichField is 0 for aveHR, 1 for aveSpeed, 2 for distance, 3 for startDays (days from January1 of that year), 4 for the start year. Then, set the global trip to that field.
+On startup, need to check to see if there is Trip data stored in EEPROM. There will be a number in some data field, 
+staticly defined like the WAVR, that has the number of things. After loading this number the different data fields of 
+certain trips will be a certain offset off. For example, (not good values), the number stored is 3 representing three 
+trips that are stored. We need to look at another data field that represents whether that last trip was finished or not. 
+If not finished, load the data that it's referring too => memory location 0+location*40+whichFIeld*8 where whichField 
+is 0 for aveHR, 1 for aveSpeed, 2 for distance, 3 for startDays (days from January1 of that year), 4 for the start year. 
+Then, set the global trip to that field.
