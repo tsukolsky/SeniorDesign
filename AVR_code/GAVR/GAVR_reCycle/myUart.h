@@ -96,9 +96,9 @@ void ReceiveWAVR(){
 	}
 	case 1: {
 		while (noCarriage && flagUARTWAVR){
-			while ((!UCSR1A & (1 << RXC1)) && flagUARTWAVR);	//wait for this sucker to come in
+			while (!(UCSR1A & (1 << RXC1)) && flagUARTWAVR);	//wait for this sucker to come in
 			recChar=UDR1;
-			recString[strLoc++]=UDR1;
+			recString[strLoc++]=recChar;
 		if (recChar=='.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
 		else {
 			recString[strLoc++] = recChar;
@@ -108,10 +108,10 @@ void ReceiveWAVR(){
 break;
 			}
 		case 2: {
-			if (strcmp(recString,"SYNDONE.")){state=0;}
-			else if (strcmp(recString,"SYNGD.")){flagGetUserDate=fTrue; PrintWAVR("ACKGD.");state=4;}
-			else if (strcmp(recString,"SYNGT.")){flagGetUserTime=fTrue; PrintWAVR("ACKGT."); state=4;}
-			else if (strcmp(recString,"SYNGB.")){flagGetUserDate=fTrue; flagGetUserTime=fTrue; PrintWAVR("ACKGB."); state=4;}
+			if (!strcmp(recString,"SYNDONE.")){state=0;}
+			else if (!strcmp(recString,"SYNGD.")){flagGetUserDate=fTrue; PrintWAVR("ACKGD.");state=4;}
+			else if (!strcmp(recString,"SYNGT.")){flagGetUserTime=fTrue; PrintWAVR("ACKGT."); state=4;}
+			else if (!strcmp(recString,"SYNGB.")){flagGetUserDate=fTrue; flagGetUserTime=fTrue; PrintWAVR("ACKGB."); state=4;}
 			else if ((recString[4]==':') != (recString[5]==':')){state=3;}
 			else {PrintWAVR("ACKERROR.");state=4;}
 			break;

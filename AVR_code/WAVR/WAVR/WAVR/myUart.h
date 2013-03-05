@@ -10,6 +10,7 @@
 |			by the Atmel family of microcontrollers
 |--------------------------------------------------------------------------------
 | Revisions: 3/3: Initial build
+|			 3/4: Added Sending protocol to GAVR, added receive protocol from BeagleBone.
 |================================================================================
 | *NOTES: This is the UART for the WAVR.
 \*******************************************************************************/
@@ -28,6 +29,8 @@ void printTimeDate(BOOL WAVRorBone=fFalse, BOOL pTime=fTrue,BOOL pDate=fTrue);
 
 //Declare external flags and clock.
 extern BOOL flagSendingGAVR, flagUserDate, flagUserTime, flagUpdateGAVRTime, flagUpdateGAVRDate, flagInvalidDateTime, flagWaitingToSendGAVR;
+extern BOOL flagReceivingBone, flagFreshStart, restart;
+extern WORD globalADC, globalTemp;
 extern myTime currentTime;
 
 #define updatingGAVR (flagUpdateGAVRDate || flagUpdateGAVRTime)
@@ -197,7 +200,104 @@ void sendGAVR(){
 	
 }//end function 	
 	
+/*************************************************************************************************************/
+void ReceiveBone(){
+	volatile static unsigned int state=0;
+	char recChar, recString[20];
+	volatile unsigned int strLoc=0;
+	BOOL noCarriage=fTrue;
 	
+	while (flagReceivingBone){
+			/*************************************************************BEGIN STATE MACHINE************************************************/
+			/* State 0: Get the first character that was loaded in the buffer. If ., go to ACKERROR state, else go to state 1				*/
+			/* State 1: Get the rest of a string. If timeout, do nothing. Otherwise assemble. If overflow, go to ACKERROR, else go to state2*/
+			/* State 2: String parsing. See what it's asking for/giving. If command, return what it wants. If time, try and set the time.	*/
+			/*			If successful, go to successful transmission state 3, set corresponding flags based on WAVR state (startup/restart) */
+			/*			, else if not good string go to ACKBAD state 4.																		*/
+			/* State 3: Successful receive state. Print ACK<string> and then exit the loop													*/
+			/* State 4: ACKBAD, string it sent was not valid. Reply and exit loop.															*/
+			/* State 5: ACKERROR, invalid string or overflow. Say error then exit.															*/
+			/* State 6: Graceful exit. Exit from a command like adc or temp.																*/
+			/********************************************************************************************************************************/
+			
+			switch(state){
+				case 0:{
+					strLoc=0;
+					recChar = UDR0;
+					if (recChar=='.'){
+						state=5;
+					} else  {recString[strLoc++]=recChar; state=1;}	
+					break;				
+					}//end case 0
+				case 1:{
+					while (noCarriage && flagReceivingBone){
+						while (!(UCSR1A & (1 << RXC0)) && flagReceivingBone);
+						if (!flagReceivingBone){break;}
+						recChar=UDR0;
+						recString[strLoc++]=recChar;
+						if (recChar == '.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
+						else{
+							recString[strLoc++]=recChar;
+							if (strLoc >= 19){state=5;noCarriage=fFalse;}
+						}//end if-else
+					}//end while
+					break;
+					}//end case 1
+				case 2:{
+					if (!strcmp(recString,"date.")){printTimeDate(fTrue,fFalse,fTrue); state=6;}
+					else if (!strcmp(recString,"time.")){printTimeDate(fTrue,fTrue,fFalse);state=6;}
+					else if (!strcmp(recString,"both.")){printTimeDate(fTrue,fTrue,fTrue);state=6;}
+					else if (!strcmp(recString,"save.")){saveDateTime_eeprom(fTrue,fFalse);PrintBone(recString);state=6;}
+					else if (!strcmp(recString,"adc.")){char tempChar[7]; utoa(globalADC,tempChar,10); tempChar[6]='\0'; PrintBone(tempChar);state=6;}
+					else if (!strcmp(recString,"temp.")){char tempChar[7]; utoa(globalTemp,tempChar,10); tempChar[6]='\0'; PrintBone(tempChar);state=6;}
+					else if (recString[2] == ':'){//valid string. Update the time anyways. Comes in every 20 minutes or so...
+						BOOL success=currentTime.setTime(recString);
+						if (success){state=3;}
+						else {state=4;}
+						
+						//Decide what I need to save and which flags need to go up.	
+						if (success && !restart && !flagFreshStart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRTime=fTrue;}
+						else if (success && !restart && flagFreshStart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRTime=fTrue; flagUserDate=fTrue;}
+						else if (success && restart && !flagFreshStart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRDate=fTrue; flagUpdateGAVRTime=fTrue;;}
+						else if (!success && restart){flagUpdateGAVRTime=fTrue; flagUpdateGAVRDate=fTrue;}	//sends eeprom time and date
+						else if (!success && flagFreshStart){flagUserTime=fTrue; flagUserDate=fTrue;} //need to get user time and date
+						else;
+						//Reset flags for startup
+						if (restart){restart=fFalse;}
+						if (flagFreshStart){flagFreshStart=fFalse;}	
+					} else if (!strcmp(recString,"SYNNONE.")){state=3;}	
+					else {state=5;}						
+					break;
+					}//end case 2
+				case 3:{
+					//Successful receive state
+					PrintBone("ACK");
+					PrintBone(recString);
+					state=0;
+					flagReceivingBone=fFalse;
+					break;
+					}//end case 3
+				case 4:{
+					PrintBone("ACKBAD.");
+					flagReceivingBone=fFalse;
+					state=0;
+					break;
+					}//end case 4
+				case 5:{
+					PrintBone("ACKERROR.");
+					flagReceivingBone=fFalse;
+					state=0;
+					break;
+					}//end case 5
+				case 6:{
+					flagReceivingBone=fFalse;
+					state=0;
+					break;
+					}//end case 6
+				default:{flagReceivingBone=fFalse; state=0;break;}
+			}//end switch
+	}//end while(flagUARTbone)	
+}//end ReceiveBone()
 
 /*************************************************************************************************************/
 
