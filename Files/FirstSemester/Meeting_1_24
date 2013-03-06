@@ -1,0 +1,11 @@
+Summary Completed:
+-battery management system => bank of regulators for correct output voltages to main board (5,3.3, 1.8V, etc)
+-GPS schematic => Linx system w/ debug LED
+
+Current Issues:
+-BeagleBone development: Need to hash out I2C/SPI ports to the p8/p9 header. I2C-1 and I2C-3 are enabled, however running the "i2cdetect -r 3" yeilds a stauts warning about disrtupting registers/signal lines. SPI2.0 is the only thing enabled, would prefer SPI1. 
+-LCD code/selection. Drive the LCD w/ atmega or beaglebone? Maybe ATMEGA for easier time/dealing with beaglebone software
+
+Next Week:
+-Finish compiling buildroot kernel for beaglebone; 80% complete____Boot and check I2C/SPI capabilities
+-INvestigate use of ASYNCHRONIOUS TIMER for a RTC; works w/ backup 3v battery pack put into main mdoule. No I2C and external chip needed.
