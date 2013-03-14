@@ -3,13 +3,15 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 3/3/2013
-| Last Revised: 3/3/2013
+| Last Revised: 3/14/2013
 | Copyright of Todd Sukolsky
 |================================================================================
 | Description: This file conatians the UART0 and UART1 basic send and receive routines used 
 |			by the Atmel family of microcontrollers
 |--------------------------------------------------------------------------------
 | Revisions: 3/3: Initial build
+|			3/14: Slight changes to implemntation of GAVR->WAVR responses for 
+|				  WAVR requests.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -20,7 +22,7 @@
 #include "stdtypes.h"
 
 //Implementations for interrupt resets and sets
-#define __disableLevel1INT() PCMSK0 = 0x00; EIMSK=0x00;		//disable any interrupt that might screw up reception. Keep the clock ticks going though
+#define __killLevel1INT() PCMSK0 = 0x00; EIMSK=0x00;		//disable any interrupt that might screw up reception. Keep the clock ticks going though
 #define __enableLevel1INT() PCMSK0 |= (1 << PCINT0); EIMSK |= (1 << INT2);
 
 
@@ -61,9 +63,7 @@ void PrintWAVR(char string[]){
 //request for user to set date happens
 void ReceiveWAVR(){
 	/*****Kill unnecessary Interrupts*****/
-	cli();
-	__disableLevel1INT();
-	sei();
+	sei();	//make sure clock is still functioning, everything else should be killed by this point though.
 	
 	//Declare variables to be used.
 	volatile unsigned int state=0;
@@ -86,33 +86,33 @@ void ReceiveWAVR(){
 		/*			and time in EEPROM as well as set the current Time and then go to state 4.															*/
 		/* State 4: This is the close connection state. Reset state to 0 and kill the flagUARTWAVR along with any other necessary flags					*/
 		/************************************************************************************************************************************************/
-		switch (state){
-			case 0: {
-				strLoc=0;
-				recChar=UDR1;
-			if (recChar=='.'){PrintWAVR("ACKERROR.");state=4;}
-		else {recString[strLoc++]=recChar; state=1;}
-		break;
-	}
-	case 1: {
-		while (noCarriage && flagUARTWAVR){
-			while (!(UCSR1A & (1 << RXC1)) && flagUARTWAVR);	//wait for this sucker to come in
+	switch (state){
+		case 0: {
+			strLoc=0;
 			recChar=UDR1;
-			recString[strLoc++]=recChar;
-		if (recChar=='.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
-		else {
-			recString[strLoc++] = recChar;
-		if (strLoc >= 19){strLoc = 0; noCarriage = fFalse; flagUARTWAVR=fFalse; PrintWAVR("ACKERROR."); state=0;}
-	}
-}//end while noCarriage
-break;
+			if (recChar=='.'){PrintWAVR("ACKERROR.");state=4;}
+			else {recString[strLoc++]=recChar; state=1;}
+			break;
+			}
+		case 1: {
+			while (noCarriage && flagUARTWAVR){
+				while (!(UCSR1A & (1 << RXC1)) && flagUARTWAVR);	//wait for this sucker to come in
+				recChar=UDR1;
+				recString[strLoc++]=recChar;
+				if (recChar=='.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
+				else {
+					//	recString[strLoc++] = recChar;
+					if (strLoc >= 19){strLoc = 0; noCarriage = fFalse; flagUARTWAVR=fFalse; PrintWAVR("ACKERROR."); state=0;}
+				}
+			}//end while noCarriage
+			break;
 			}
 		case 2: {
-			if (!strcmp(recString,"SYNDONE.")){state=0;}
+			if (!strcmp(recString,"SYNDONE.")){state=4;}
 			else if (!strcmp(recString,"SYNGD.")){flagGetUserDate=fTrue; PrintWAVR("ACKGD.");state=4;}
 			else if (!strcmp(recString,"SYNGT.")){flagGetUserTime=fTrue; PrintWAVR("ACKGT."); state=4;}
 			else if (!strcmp(recString,"SYNGB.")){flagGetUserDate=fTrue; flagGetUserTime=fTrue; PrintWAVR("ACKGB."); state=4;}
-			else if ((recString[4]==':') != (recString[5]==':')){state=3;}
+			else if ((recString[4]==':') != (recString[5]==':')){state=3;}	//go parse the string
 			else {PrintWAVR("ACKERROR.");state=4;}
 			break;
 			}
@@ -152,7 +152,6 @@ break;
 			state=0;
 			//Do anythingi extra here for a reset.
 			flagUARTWAVR=fFalse;
-			__enableLevel1INT();
 		}
 		default: {state=0; flagUARTWAVR=fFalse; break;}
 			

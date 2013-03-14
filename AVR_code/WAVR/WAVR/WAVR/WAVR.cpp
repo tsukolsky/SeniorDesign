@@ -29,6 +29,10 @@
 |			3/4- Moved UART transmissions/receptions to "myUart.h". See that file
 |				 for notes on whats going on in those files. Need to tweak how the 
 |				 timeout works.
+|		   3/14- Added logic to allow for "flagInvalidDateTime" to work. If that flag gets 
+|				 set the main program is responsible for setting flagUserDate and flagUserTime
+|				 high to trigger what is going on. See "myUart.h" -> 'Revisions' with this 
+|				 same date for more information.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -177,7 +181,7 @@ ISR(TIMER2_OVF_vect){
 
 ISR(USART0_RX_vect){
 	UCSR0B &= ~(1 << RXCIE0);
-	__killLevel1INT();
+	__killLevel1INT();				//make sure all interrupts are disabled that could cripple protocol
 	flagReceivingBone=fTrue;
 }
 
@@ -206,11 +210,13 @@ int main(void)
 		if (flagReceivingBone){
 			ReceiveBone();
 			__enableLevel1INT();
-			flagGoToSleep = fTrue;
+			flagGoToSleep=fTrue;
 			flagNormalMode=fTrue;
 		}
 	
+		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The interal send machine deals with the flags.
 		if (flagUpdateGAVRTime || flagUpdateGAVRDate || flagUserDate || flagUserTime){
+			__killLevel1INT();
 			sendGAVR();
 			__enableLevel1INT();
 		}
@@ -247,7 +253,7 @@ int main(void)
 		//About to shutdown, save EEPROM
 		if (flagNewShutdown){
 			//Make sure nothing messes with the routine that we care about
-			EIMSK = 0;
+			__killLevel1INT();
 			flagGoToSleep = fTrue;
 			flagReceivingBone = fFalse;
 			saveDateTime_eeprom(fTrue,fTrue);
@@ -284,9 +290,15 @@ int main(void)
 			//get an updated date and time from the BeagleBone. Always update GAVR.			
 		}		
 		
-			
 		//If it's time to go to sleep, go to sleep. INT0 or TIM2_overflow will wake it up.
 		if (flagGoToSleep){GoToSleep(flagShutdown);}
+		
+		//Add logic for an invalid date and time somehow getting in here
+		if (flagInvalidDateTime){
+			flagInvalidDateTime=fFalse;
+			flagUserTime=fTrue;
+			flagUserDate=fTrue;	//ask user to update/confirm both date and time
+		}		
 					
 	}
 	

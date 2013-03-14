@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 3/4/13
+| Last Revised: 3/14/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -20,6 +20,8 @@
 |				  to get communication with Bone working and Trip storage management.
 |				  Moved all UART transmissions and receive protocols to an external
 |				  file "myUart.h".
+|			3/14- Checked over GAVR->WAVR transmission in myUart.h, looks good. Just
+|				  need to field test now. Small tweaks possibly in main to make code look better.
 |				  
 |================================================================================
 | *NOTES: (1) This document is stored in the GIT repo @ https://github.com/tsukolsky/SeniorDesign.git/AVR_CODE/GAVR.
@@ -51,7 +53,7 @@ using namespace std;
 #define MYUBRR FOSC/16/BAUD -1	//declares Baud Rate for UART
 
 //Implementations for interrupt resets and sets
-#define __disableLevel1INT() PCMSK0 = 0x00; EIMSK=0x00;		//disable any interrupt that might screw up reception. Keep the clock ticks going though
+#define __killLevel1INT() PCMSK0 = 0x00; EIMSK=0x00;		//disable any interrupt that might screw up reception. Keep the clock ticks going though
 #define __enableLevel1INT() PCMSK0 |= (1 << PCINT0); EIMSK |= (1 << INT2);
 
 
@@ -98,8 +100,7 @@ ISR(INT2_vect){
 		cli();
 		flagWaitingForWAVR=fTrue;
 		UCSR1B |= (1 << RXCIE1);	//enable receiver 1
-		PCMSK0=0x00;
-		EIMSK=0x00;					//disable all PCINTs
+		__killLevel1INT();
 		PrintWAVR("ACKW");			//Ack from GAVR
 		sei();
 		debounceNumber=0;
@@ -172,8 +173,10 @@ int main(void)
 		
 		//Receiving from WAVR. Either a time string or asking user to set date/time/both.
 		if (flagUARTWAVR){
+			__killLevel1INT();
 			prtDEBUGleds |= (1 << bnWAVRCOMMled);
 			ReceiveWAVR();
+			__enableLevel1INT();
 			prtDEBUGleds &= ~(1 << bnWAVRCOMMled);
 		}
 		
@@ -206,10 +209,10 @@ int main(void)
 				Wait_sec(3);
 				flagGetUserTime=fFalse;
 				prtDEBUGleds &= ~(1 << bnUSERTIMEled);
-			}
-		}		
-    }
-}
+			}//end else.
+		}//end if userDate or userTime		
+    }//end while
+}//end main
 
 
 /*************************************************************************************************************/
