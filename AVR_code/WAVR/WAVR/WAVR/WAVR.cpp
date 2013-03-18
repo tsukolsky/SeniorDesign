@@ -71,6 +71,7 @@ using namespace std;
 #define LOW_BATT_ADC 300    //change
 #define HIGH_TEMP	 12900	//~99 celcius
 
+//Define Macros
 #define __killPeriphPow() {prtENABLE &= ~((1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)); prtBBen &= ~(1 << bnBBen);}
 #define __powPeriph() {prtENABLE |= ((1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)); prtBBen |= (1 << bnBBen);}
 #define __killLevel1INT() {EIMSK=0x00; PCMSK0=0x00;}
