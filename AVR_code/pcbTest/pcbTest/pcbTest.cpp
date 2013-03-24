@@ -23,13 +23,12 @@
 #include <avr/eeprom.h>
 #include <avr/io.h>
 
-//#define GAVR
+#define GAVR
 
-#ifdef GAVR
-	#include "ATmegaXX4PA.h"
-#else	
-	#include "ATmega2560.h"
-#endif
+#include "ATmegaXX4PA.h"
+
+//#include "ATmega2560.h"
+
 
 using namespace std;
 
@@ -49,13 +48,18 @@ void GoToSleep();
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 ISR(TIMER2_OVF_vect){
-	#ifdef GAVR
-		prtSLEEPled ^= (1 << bnSLEEPled);	//toggles sleep led at .5Hz
-	#else
-		static unsigned int counter=0;
-		prtDEBUGled ^= (1 << counter);
-		if (counter++ == 7){counter = 0;}
-	#endif
+	static unsigned int counter=4;	
+	prtSLEEPled ^= (1 << bnSLEEPled);	//toggles sleep led at .5Hz
+	
+/*	prtENABLE ^= (1 << counter);
+	if (counter == 7){prtMAINen |= (1 << bnMAINen);counter++;}
+	else if (counter == 8){prtMAINen &= ~(1 << bnMAINen); counter=4;}
+	else;*/
+	
+	/*
+	prtDEBUGled ^= (1 << counter);
+	if (counter++ == 7){counter = 0;}
+	*/
 
 }
 
@@ -67,6 +71,9 @@ int main(void)
 	EnableRTCTimer();
     while(1)
     {
+		prtTEMPen |= (1 << bnTEMPen);
+		Wait_ms(2000);
+		prtTEMPen &= ~(1 << bnTEMPen);
         GoToSleep(); 
     }
 }
@@ -78,6 +85,7 @@ void DeviceInit(){
 	DDRB = 0;
 	DDRC = 0;
 	DDRD = 0;
+/*
 	DDRE = 0;
 	DDRF = 0;
 	DDRG = 0;
@@ -86,12 +94,6 @@ void DeviceInit(){
 	DDRK = 0;
 	DDRL = 0;
 	
-	PORTA = 0;
-	PORTB = 0;
-	PORTC = 0;
-	PORTD = 0;
-	PORTE = 0;
-	PORTD = 0;
 	PORTE = 0;
 	PORTF = 0;
 	PORTG = 0;
@@ -99,6 +101,12 @@ void DeviceInit(){
 	PORTJ = 0;
 	PORTK = 0;
 	PORTL = 0;
+	*/
+	PORTA = 0;
+	PORTB = 0;
+	PORTC = 0;
+	PORTD = 0;
+
 }
 
 /*************************************************************************************************************/
@@ -117,7 +125,7 @@ void AppInit(unsigned int ubrr){
 	//Disable power to all peripherals
 	PRR0 |= (1 << PRTWI)|(1 << PRTIM2)|(1 << PRTIM0)|(1 << PRUSART1)|(1 << PRTIM1)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
-	#ifdef GAVR
+
 		//Enable LEDs
 		ddrSLEEPled |= (1 << bnSLEEPled);
 		ddrSTATUSled |= (1 << bnSTATUSled);
@@ -128,18 +136,17 @@ void AppInit(unsigned int ubrr){
 		ddrENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnGPSen);
 		ddrTEMPen |= (1 << bnTEMPen);
 		ddrMAINen |= (1 << bnMAINen);
-		prtENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnGPSen);
-		prtTEMPen |= (1 << bnTEMPen);
-		prtMAINen |= (1 << bnMAINen);
-	#else
-	
+		prtENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnLCDen);
+	//	prtTEMPen |= (1 << bnTEMPen);
+	//	prtMAINen |= (1 << bnMAINen);
+/*
 		//Enable LEDs
 		ddrDEBUGled |= 0xFF;
 		prtDEBUGled = 0x00;
 		ddrDEBUGled2 |= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
 		prtDEBUGled2 |= ((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
-	#endif
-	
+*/
+	sei();
 }
 
 
@@ -176,7 +183,7 @@ void Wait_ms(volatile int delay)
 /*************************************************************************************************************/
 void GoToSleep(){
 	sei();
-	volatile int sleepTime=20, sleepTicks = 0;
+	volatile int sleepTime=5, sleepTicks = 0;
 	//If bool is true, we are in low power mode/backup, sleep for 60 seconds then check ADC again
 	
 	//Set to power save, then enable
