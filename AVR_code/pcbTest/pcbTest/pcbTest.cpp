@@ -22,7 +22,14 @@
 #include <avr/io.h>
 #include <avr/eeprom.h>
 #include <avr/io.h>
-#include "ATmegaXX4PA.h"
+
+//#define GAVR
+
+#ifdef GAVR
+	#include "ATmegaXX4PA.h"
+#else	
+	#include "ATmega2560.h"
+#endif
 
 using namespace std;
 
@@ -42,14 +49,21 @@ void GoToSleep();
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 ISR(TIMER2_OVF_vect){
-	prtSLEEPled ^= (1 << bnSLEEPled);	//toggles sleep led at .5Hz
+	#ifdef GAVR
+		prtSLEEPled ^= (1 << bnSLEEPled);	//toggles sleep led at .5Hz
+	#else
+		static unsigned int counter=0;
+		prtDEBUGled ^= (1 << counter);
+		if (counter++ == 7){counter = 0;}
+	#endif
+
 }
 
 int main(void)
 {
 	DeviceInit();
 	AppInit(MYUBRR);
-	Wait_ms(1000);
+	Wait_ms(200);
 	EnableRTCTimer();
     while(1)
     {
@@ -64,11 +78,27 @@ void DeviceInit(){
 	DDRB = 0;
 	DDRC = 0;
 	DDRD = 0;
+	DDRE = 0;
+	DDRF = 0;
+	DDRG = 0;
+	DDRH = 0;
+	DDRJ = 0;
+	DDRK = 0;
+	DDRL = 0;
 	
 	PORTA = 0;
 	PORTB = 0;
 	PORTC = 0;
 	PORTD = 0;
+	PORTE = 0;
+	PORTD = 0;
+	PORTE = 0;
+	PORTF = 0;
+	PORTG = 0;
+	PORTH = 0;
+	PORTJ = 0;
+	PORTK = 0;
+	PORTL = 0;
 }
 
 /*************************************************************************************************************/
@@ -87,19 +117,28 @@ void AppInit(unsigned int ubrr){
 	//Disable power to all peripherals
 	PRR0 |= (1 << PRTWI)|(1 << PRTIM2)|(1 << PRTIM0)|(1 << PRUSART1)|(1 << PRTIM1)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
-	//Enable LEDs
-	ddrSLEEPled |= (1 << bnSLEEPled);
-	ddrSTATUSled |= (1 << bnSTATUSled);
-	prtSLEEPled &= ~(1 << bnSLEEPled);		//turn on initially
-	prtSTATUSled |= (1 << bnSTATUSled);
+	#ifdef GAVR
+		//Enable LEDs
+		ddrSLEEPled |= (1 << bnSLEEPled);
+		ddrSTATUSled |= (1 << bnSTATUSled);
+		prtSLEEPled &= ~(1 << bnSLEEPled);		//turn on initially
+		prtSTATUSled |= (1 << bnSTATUSled);
+		
+		//Enable all regulators!
+		ddrENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnGPSen);
+		ddrTEMPen |= (1 << bnTEMPen);
+		ddrMAINen |= (1 << bnMAINen);
+		prtENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnGPSen);
+		prtTEMPen |= (1 << bnTEMPen);
+		prtMAINen |= (1 << bnMAINen);
+	#else
 	
-	//Enable all regulators!
-	ddrENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnGPSen);
-	ddrTEMPen |= (1 << bnTEMPen);
-	ddrMAINen |= (1 << bnMAINen);
-	prtENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnGPSen);
-	prtTEMPen |= (1 << bnTEMPen);
-	prtMAINen |= (1 << bnMAINen);
+		//Enable LEDs
+		ddrDEBUGled |= 0xFF;
+		prtDEBUGled = 0x00;
+		ddrDEBUGled2 |= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
+		prtDEBUGled2 |= ((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
+	#endif
 	
 }
 
@@ -135,8 +174,6 @@ void Wait_ms(volatile int delay)
 	}
 }
 /*************************************************************************************************************/
-/*************************************************************************************************************/
-
 void GoToSleep(){
 	sei();
 	volatile int sleepTime=20, sleepTicks = 0;
@@ -158,3 +195,4 @@ void GoToSleep(){
 	Wait_ms(10);
 	
 }
+/*************************************************************************************************************/
