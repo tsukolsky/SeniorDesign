@@ -3,11 +3,14 @@
 | Author: Todd Sukolsky
 | Initial Build: 3/23/2013
 | Last Revised: 3/23/13
-| Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main program file for PCB testing. First tests the WAVR
 |--------------------------------------------------------------------------------
 | Revisions: 3/23-Initial Build. Testing 644PA->WAVR
+|			 3/25- Simulated startup and shutdown procedures. Added some flags
+|				   and debugged LCD_EN. Line still only outputs 1.6V, but triggers
+|				   regulator. All objects work. See revisions to "*.h" files.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -23,10 +26,10 @@
 #include <avr/eeprom.h>
 #include <avr/io.h>
 
-#define GAVR
-
+#define WAVR
 #include "ATmegaXX4PA.h"
 
+//#define GAVR
 //#include "ATmega2560.h"
 
 
@@ -39,12 +42,35 @@ using namespace std;
 #define BAUD 9600
 #define MYUBRR FOSC/16/BAUD - 1			//declares baud rate
 
+//Power Management Macros
+#define __enableGPSandGAVR() prtENABLE |= (1 << bnGPSen)|(1 << bnGAVRen)
+#define __killGPSandGAVR()	 prtENABLE &= ~((1 << bnGPSen)|(1 << bnGAVRen))
+#define __killBeagleBone()	 prtENABLE &= ~(1 << bnBBen)
+#define __enableBeagleBone() prtENABLE |= (1 <<bnBBen)
+#define __enableLCD()		 prtENABLE |= (1 << bnLCDen)
+#define __killLCD()			 prtENABLE &= ~(1 << bnLCDen)
+#define __enableTemp()		prtTEMPen |= (1 << bnTEMPen)
+#define __killTemp()		prtTEMPen &= ~(1 << bnTEMPen)
+#define __enableMain()		prtMAINen |= (1 << bnMAINen)
+#define __killMain()		prtMAINen &= ~(1 << bnMAINen);
+
+
 //Forward Declarations
 void DeviceInit();
 void AppInit(unsigned int ubrr);
 void EnableRTCTimer();
 void Wait_ms(volatile int delay);
 void GoToSleep();
+void TakeADC();
+void PowerUp(uint16_t interval);
+void PowerDown();
+
+
+/***********************************/
+/*			Global Vars			  **/
+/***********************************/
+uint16_t currentSecond=0;
+uint16_t globalADC=0;
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 ISR(TIMER2_OVF_vect){
@@ -69,12 +95,21 @@ int main(void)
 	AppInit(MYUBRR);
 	Wait_ms(200);
 	EnableRTCTimer();
+	uint8_t flagNormalMode=0, flagLowPower=1;	//On startup, in low power mode
+	
     while(1)
     {
-		prtTEMPen |= (1 << bnTEMPen);
-		Wait_ms(2000);
-		prtTEMPen &= ~(1 << bnTEMPen);
-        GoToSleep(); 
+		TakeADC();
+		if (globalADC < 700 && flagNormalMode){
+			PowerDown();
+			flagNormalMode=0;
+			flagLowPower=1;
+		} else if (globalADC >= 700 && flagLowPower && !flagNormalMode) {
+			PowerUp(1000);
+			flagNormalMode=1;
+			flagLowPower=0;
+		}				
+      //  GoToSleep(); 
     }
 }
 
@@ -136,9 +171,8 @@ void AppInit(unsigned int ubrr){
 		ddrENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnGPSen);
 		ddrTEMPen |= (1 << bnTEMPen);
 		ddrMAINen |= (1 << bnMAINen);
-		prtENABLE |= (1 << bnGPSen)|(1 << bnBBen)|(1 << bnGAVRen)|(1 << bnLCDen);
-	//	prtTEMPen |= (1 << bnTEMPen);
-	//	prtMAINen |= (1 << bnMAINen);
+		PowerDown();
+		__killTemp();
 /*
 		//Enable LEDs
 		ddrDEBUGled |= 0xFF;
@@ -203,3 +237,64 @@ void GoToSleep(){
 	
 }
 /*************************************************************************************************************/
+
+void TakeADC(){
+	uint16_t adcReading = 0;
+	
+	cli();
+	//Turn Power on to ADC
+	PRR0 &= ~(1 << PRADC);
+	ADMUX |= (1 << REFS1);	//internal 1.1V reference
+	ADCSRA |= (1 << ADEN)|(1 << ADPS2);			//clkIO/16
+	DIDR0 = 0xFE;								//disable all ADC's except ADC0
+	Wait_ms(5);									//Tim for registers to setup
+	
+	//Run conversion twice, throw first one out
+	for (int i = 0; i < 2; i++){ADCSRA |= (1 << ADSC); while (ADCSRA & (1 << ADSC));}
+
+	//Put conversion into buffer
+	adcReading = ADCL;
+	adcReading |= (ADCH << 8);
+
+	//Re-enable interrupts
+	sei();
+
+	//Disable ADC hardware/registers
+	ADCSRA = 0;
+	ADMUX = 0;
+	DIDR0 |= (1 << ADC0D);
+
+	//Turn off power
+	PRR0 |= (1 << PRADC);
+
+	globalADC=adcReading;
+}
+/*************************************************************************************************************/
+void PowerUp(uint16_t interval){
+	cli();
+	//First power on main
+	__enableMain();
+	Wait_ms(interval);
+	__enableGPSandGAVR();
+	Wait_ms(interval);
+	__enableBeagleBone();
+	Wait_ms(interval);
+	__enableLCD();
+	Wait_ms(interval*2);
+	sei();
+	
+}
+/*************************************************************************************************************/
+void PowerDown(){
+	cli();
+	prtInterrupts |= (1 << bnBBint)|(1 << bnGAVRint);
+	Wait_ms(3000);
+	prtInterrupts &= ~((1 << bnBBint)|(1 << bnGAVRint));
+	__killLCD();
+	__killGPSandGAVR();
+	__killBeagleBone();
+	__killMain();
+	sei();
+}
+/*************************************************************************************************************/
+
