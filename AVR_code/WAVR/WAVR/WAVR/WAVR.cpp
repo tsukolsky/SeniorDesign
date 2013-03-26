@@ -2,7 +2,7 @@
 | WAVR.cpp
 | Author: Todd Sukolsky
 | Initial Build: 1/28/2013
-| Last Revised: 3/4/13
+| Last Revised: 3/26/13
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main.cpp file for the RTC to be implemented on the 
@@ -33,6 +33,8 @@
 |				 set the main program is responsible for setting flagUserDate and flagUserTime
 |				 high to trigger what is going on. See "myUart.h" -> 'Revisions' with this 
 |				 same date for more information.
+|		   3/26- Integrated PCB pin declarations and started work on GAVR->WAVR. See "myUart.h"
+|				 ->'ReceiveGAVR()'. Startup procedures added.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
