@@ -82,18 +82,21 @@
 //To GAVR: bn{x}{y} where x is WAVR IO line, y is GAVR IO line
 #define prtGAVRio	PORTD
 #define ddrGAVRio	DDRD
+#define pinGAVRio	PIND
 #define bnW3G0		4
 #define bnW4G1		5
 #define bnW5G2		6
 //To Beagle:
 #define prtBBio		PORTC
 #define ddrBBio		DDRC
+#define pinBBio		PINC
 #define bnW0B9		3
 #define bnW1B10		4
 #define bnW2B11		5
 
 #define prtW6B8		PORTB
 #define ddrW6B8		DDRB
+#define pinW6B8		PINB
 #define bnW6B8		1
 
 /*******************************************/

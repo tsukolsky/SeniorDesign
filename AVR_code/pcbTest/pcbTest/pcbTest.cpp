@@ -52,7 +52,7 @@ using namespace std;
 #define __enableTemp()		prtTEMPen |= (1 << bnTEMPen)
 #define __killTemp()		prtTEMPen &= ~(1 << bnTEMPen)
 #define __enableMain()		prtMAINen |= (1 << bnMAINen)
-#define __killMain()		prtMAINen &= ~(1 << bnMAINen);
+#define __killMain()		prtMAINen &= ~(1 << bnMAINen)
 
 
 //Forward Declarations

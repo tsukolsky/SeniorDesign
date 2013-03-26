@@ -34,7 +34,8 @@
 |				 high to trigger what is going on. See "myUart.h" -> 'Revisions' with this 
 |				 same date for more information.
 |		   3/26- Integrated PCB pin declarations and started work on GAVR->WAVR. See "myUart.h"
-|				 ->'ReceiveGAVR()'. Startup procedures added.
+|				 ->'ReceiveGAVR()'. Startup procedures added. UART1 for GAVR added. Renamed
+|				 interrupt enables and kills to "__*CommINT()".
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -57,27 +58,41 @@ using namespace std;
 #include "myUart.h"
 
 //USART/BAUD defines
-#define FOSC 20000000		//20 MHz
-#define ASY_OSC	32768		//32.768 kHz
-#define BAUD 9600
+#define FOSC				20000000		//20 MHz
+#define ASY_OSC				32768		//32.768 kHz
+#define BAUD				9600
 #define MYUBRR FOSC/16/BAUD - 1			//declares baud rate
 
+
+//Declare Time between power on triggers
+#define POWER_UP_INTERVAL	1000
+
 //Declare timeout value
-#define COMM_TIMEOUT_SEC 3
+#define COMM_TIMEOUT_SEC	3
 
 //Sleep and Run Timing constants
 #define SLEEP_TICKS_HIGHV	10				//sleeps for 20 seconds when battery is good to go
 #define SLEEP_TICKS_LOWV	12				//sleeps for 60 seconds when battery voltage is low, running on backup.
 
 //ADC and Temp defines
-#define LOW_BATT_ADC 300    //change
-#define HIGH_TEMP	 12900	//~99 celcius
+#define LOW_BATT_ADC		 882    //change: 882; (7.4*(14.7/114.7)/1.1)(1024)=882
+#define HIGH_TEMP			 12900	//~99 celcius
 
-//Define Macros
-#define __killPeriphPow() {prtENABLE &= ~((1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)); prtBBen &= ~(1 << bnBBen);}
-#define __powPeriph() {prtENABLE |= ((1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)); prtBBen |= (1 << bnBBen);}
-#define __killLevel1INT() {EIMSK=0x00; PCMSK0=0x00;}
-#define __enableLevel1INT() {EIMSK|= (1 << INT2);}
+//Power Management Macros
+#define __enableGPSandGAVR() prtENABLE |= (1 << bnGPSen)|(1 << bnGAVRen)
+#define __killGPSandGAVR()	 prtENABLE &= ~((1 << bnGPSen)|(1 << bnGAVRen))
+#define __killBeagleBone()	 prtENABLE &= ~(1 << bnBBen)
+#define __enableBeagleBone() prtENABLE |= (1 <<bnBBen)
+#define __enableLCD()		 prtENABLE |= (1 << bnLCDen)
+#define __killLCD()			 prtENABLE &= ~(1 << bnLCDen)
+#define __enableTemp()		 prtTEMPen |= (1 << bnTEMPen)
+#define __killTemp()		 prtTEMPen &= ~(1 << bnTEMPen)
+#define __enableMain()		 prtMAINen |= (1 << bnMAINen)
+#define __killMain()		 prtMAINen &= ~(1 << bnMAINen)
+
+//Interrupt Macros
+#define __killCommINT() {EIMSK=0x00; PCMSK0=0x00;}
+#define __enableCommINT() {EIMSK|= (1 << INT2);}
 	
 //Forward Declarations
 void DeviceInit();
@@ -88,6 +103,8 @@ void Wait_sec(volatile int sec);
 void GoToSleep(BOOL shortOrLong);
 void TakeADC();
 void GetTemp();
+void PowerUp(WORD interval);
+void PowerDown();
 
 /*********************************************GLOBAL VARIABLES***************************************************/
 /****************************************************************************************************************/
@@ -131,23 +148,32 @@ BOOL flagNewShutdown, flagShutdown,flagGoodTemp, flagGoodVolts, restart, flagFre
 
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
-ISR(PCINT0_vect){
-	
-	
+//PCINT_17: Getting information from the GAVR
+ISR(PCINT2_vect){
+	if ((PINC & (1 << PCINT17)) && !flagShutdown){
+		//Do work, correct interrupt
+		UCSR1B |= (1 << RXCIE1);
+		flagGoToSleep=fFalse;
+		flagNormalMode=fFalse;
+		__killCommINT();
+		//Acknowledge
+		PrintGAVR("ACKG");
+	}
 }	
 
-
+//INT2: Getting information from BeagleBone
 ISR(INT2_vect){	//about to get time, get things ready
 	if (!flagShutdown){		//If things are off, don't let noise do an interrupt. Shouldn't happen anyways.
 		UCSR0B |= (1 << RXCIE0);
 		flagGoToSleep=fFalse;	//no sleeping, wait for UART_RX
 		flagNormalMode=fFalse;
-		__killLevel1INT();
+		__killCommINT();
 		//Acknowledge connection, disable INT2_vect
 		PrintBone("ACKT");
 	}	
 }
 
+//RTC Timer.
 ISR(TIMER2_OVF_vect){
 	volatile static int timeOut = 0;
 	volatile static int gavrSendTimeout=0, boneReceiveTimeout=0;
@@ -156,13 +182,13 @@ ISR(TIMER2_OVF_vect){
 	
 	//GAVR Transmission Timeout
 	if (flagSendingGAVR && gavrSendTimeout <=COMM_TIMEOUT_SEC){gavrSendTimeout++;}
-	else if (flagSendingGAVR && gavrSendTimeout > COMM_TIMEOUT_SEC){flagSendingGAVR=fFalse; gavrSendTimeout=0; __enableLevel1INT();}
+	else if (flagSendingGAVR && gavrSendTimeout > COMM_TIMEOUT_SEC){flagSendingGAVR=fFalse; gavrSendTimeout=0; __enableCommINT();}
 	else if (!flagSendingGAVR && gavrSendTimeout > 0){gavrSendTimeout=0;}
 	else;
 	
 	//BeagleBone Reception Timeout
 	if (flagReceivingBone && boneReceiveTimeout <=COMM_TIMEOUT_SEC){boneReceiveTimeout++;}
-	else if (flagReceivingBone && boneReceiveTimeout > COMM_TIMEOUT_SEC){flagReceivingBone=fFalse; boneReceiveTimeout=0; __enableLevel1INT();}
+	else if (flagReceivingBone && boneReceiveTimeout > COMM_TIMEOUT_SEC){flagReceivingBone=fFalse; boneReceiveTimeout=0; __enableCommINT();}
 	else if (!flagReceivingBone && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
 	else;
 	
@@ -170,7 +196,7 @@ ISR(TIMER2_OVF_vect){
 	if ((flagReceivingBone == fTrue || flagGoToSleep == fFalse) && !flagNewShutdown && !restart){ //if waiting for a character in Receive0() or in main program without sleep
 		timeOut++;
 		if (timeOut >= 6){
-			__enableLevel1INT();
+			__enableCommINT();
 			flagReceivingBone = fFalse;
 			flagGoToSleep = fTrue;
 			flagNormalMode=fTrue;
@@ -182,10 +208,17 @@ ISR(TIMER2_OVF_vect){
 
 }
 
+//UART Receive from BeagleBone
 ISR(USART0_RX_vect){
 	UCSR0B &= ~(1 << RXCIE0);
-	__killLevel1INT();				//make sure all interrupts are disabled that could cripple protocol
+	__killCommINT();				//make sure all interrupts are disabled that could cripple protocol
 	flagReceivingBone=fTrue;
+}
+
+ISR(USART1_RX_vect){
+	UCSR1B &= ~(1 <<RXCIE1);	//disable interrupt
+	__killCommINT();
+	//flagReceivingGAVR=fTrue;
 }
 
 /*--------------------------END-Interrupt Service Routines--------------------------------------------------------------------------------*/
@@ -203,7 +236,7 @@ int main(void)
 	GetTemp();
 	//flagGoodTemp=fTrue;
 	TakeADC();
-	if (flagGoodVolts && flagGoodTemp){__powPeriph();flagFreshStart=fTrue;}
+	if (flagGoodVolts && flagGoodTemp){PowerUp(POWER_UP_INTERVAL);flagFreshStart=fTrue;}
 	else {flagNormalMode=fTrue;flagFreshStart=fFalse;}
 		
 	//main programming loop
@@ -212,16 +245,16 @@ int main(void)
 		//If receiving UART string, go get rest of it.
 		if (flagReceivingBone){
 			ReceiveBone();
-			__enableLevel1INT();
+			__enableCommINT();
 			flagGoToSleep=fTrue;
 			flagNormalMode=fTrue;
 		}
 	
 		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The interal send machine deals with the flags.
 		if (flagUpdateGAVRTime || flagUpdateGAVRDate || flagUserDate || flagUserTime){
-			__killLevel1INT();
+			__killCommINT();
 			sendGAVR();
-			__enableLevel1INT();
+			__enableCommINT();
 		}
 
 		//When to save to EEPROM. Saves time on lower half of the hour, saves data and time on lower half-hour of midday.
@@ -241,7 +274,7 @@ int main(void)
 			GetTemp();
 			//If both are good & shutodwn is low, keep it low. If shutdown is high, pull low and enable restart
 			if (flagGoodVolts && flagGoodTemp){
-				__powPeriph();
+				PowerUp(POWER_UP_INTERVAL);
 				if( flagShutdown == fTrue){restart = fTrue;}
 				flagShutdown = fFalse;
 			//If one is bad and shutdown is low, pull high as well as pull new shutdown high to indicate imminent power kill
@@ -256,34 +289,20 @@ int main(void)
 		//About to shutdown, save EEPROM
 		if (flagNewShutdown){
 			//Make sure nothing messes with the routine that we care about
-			__killLevel1INT();
+			__killCommINT();
 			flagGoToSleep = fTrue;
 			flagReceivingBone = fFalse;
 			saveDateTime_eeprom(fTrue,fTrue);
 			
-			//Alert BeagleBone and Graphics AVR that powerdown is imminent=> raise SHUTDOWN PINS for 3 clk cycles
-			prtBBleds |= (1 << bnBBint);
-			prtGAVRleds |= (1 << bnGAVRint);
-			if (!flagGoodTemp){
-				prtBBleds |= (1 << bnBBtemp);
-				prtGAVRleds |= (1 << bnGAVRtemp);
-			}
-			
-			//Five seconds for processing to finish on other chips
-			Wait_sec(6);	
-			
-			prtBBleds &= ~((1 << bnBBint)|(1 << bnBBtemp));
-			prtGAVRleds &= ~((1 << bnGAVRint)|(1 << bnGAVRtemp));
-			
-			//Kill power
-			__killPeriphPow();
+			//Kill power--Alert comes in that function
+			PowerDown();
 			flagNewShutdown = fFalse;
 		}
 		
 		//If Restart, broadcast date and time to BeagleBone and other AVR
 		if (restart){
-			__enableLevel1INT();	//enable BONE interrupt. Will come out with newest time. Give it 10 seconds to kill
-			__powPeriph();
+			__enableCommINT();	//enable BONE interrupt. Will come out with newest time. Give it 10 seconds to kill
+			PowerUp(POWER_UP_INTERVAL);
 			//Check to see if pins are ready. Use timeout of 10 seconds for pins to come high.
 			int waitTime = 0;
 			while (waitTime < 3 && restart){waitTime++; Wait_sec(1);}
@@ -337,6 +356,16 @@ void AppInit(unsigned int ubrr){
 	UCSR0C = (1 << UCSZ01)|(1 << UCSZ00);							//Asynchronous; 8 data bits, no parity
 	//UCSR0B |= (1 << RXCIE0);
 	
+	//Set BAUD for UART1
+	UBRR1L = ubrr;
+	UBRR0H = (ubrr >> 8);
+	//UCSR1A |= (1 << U2X1);
+	
+	//Enable UART_TX1 and UART_RX1
+	UCSR1B = (1 << TXEN1)|(1 << RXEN1);
+	UCSR1C = (1 << UCSZ11)|(1 << UCSZ10);
+	//UCSR1B |= (1 << RXCIE1);
+	
 	//Disable power to all peripherals
 	PRR0 |= (1 << PRTWI)|(1 << PRTIM2)|(1 << PRTIM0)|(1 << PRUSART1)|(1 << PRTIM1)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
@@ -347,24 +376,28 @@ void AppInit(unsigned int ubrr){
 	prtSTATUSled |= (1 << bnSTATUSled);	//turn on initially
 	
 	//Enable BB and GAVR alert pins...outputs, no pull by default.
-	ddrBBleds |= (1 << bnBBint)|(1 << bnBBtemp);
-	ddrGAVRleds |= (1 << bnGAVRint)|(1 << bnGAVRtemp);
+	ddrBONEINT |= (1 << bnBBint);
+	ddrGAVRINT |= (1 << bnGAVRint);
 	
 	//Enable GAVR interrupt pin, our PB3, it's INT2
 	ddrGAVRINT |= (1 << bnGAVRINT);
 	prtGAVRINT &=  ~(1 << bnGAVRINT);	//set low at first
 	
 	//Enable enable signals
-	ddrENABLE |= (1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen);
-	ddrBBen |= (1 << bnBBen);
+	ddrENABLE |= (1 << bnGPSen)|(1 << bnGAVRen)|(1 << bnLCDen)|(1 << bnBBen);
 	ddrTEMPen |= (1 << bnTEMPen);
-	prtTEMPen |= (1 << bnTEMPen);
-	
+	ddrMAINen |= (1 << bnMAINen);
+	PowerDown();
+	__killTemp();
 
 	
 	//Enable INT2. Note* Pin change interrupts will NOT wake AVR from Power-Save mode. Only INT0-2 will.
 	EICRA = (1 << ISC21)|(1 << ISC20);			//falling edge of INT2 enables interrupt
-	EIMSK = (1 << INT2);			//enable INT2 global interrupt
+	EIMSK = (1 << INT2);						//enable INT2 global interrupt
+	
+	//Enable PCINT17
+	PCMSK1 |= (1 << PCINT17);
+	PCICR |= (1 << PCIE0);
 	
 	//Enable SPI for TI temperature
 	ddrSpi0 |= (1 << bnMosi0)|(1 << bnSck0)|(1 << bnSS0);	//outputs
@@ -484,7 +517,11 @@ void TakeADC(){
 	//Put conversion into buffer
 	adcReading = ADCL;
 	adcReading |= (ADCH << 8);
-	
+		
+	//Assign global reading and set flag
+	globalADC=adcReading;
+	flagGoodVolts = (adcReading < LOW_BATT_ADC) ? fFalse : fTrue;
+		
 	//Re-enable interrupts
 	sei();
 	
@@ -495,13 +532,6 @@ void TakeADC(){
 	
 	//Turn off power
 	PRR0 |= (1 << PRADC);
-	
-	//Do work
-	Wait_ms(5);
-
-	flagGoodVolts = (adcReading < LOW_BATT_ADC) ? fFalse : fTrue;
-	
-	globalADC=adcReading;
 }
 
 /*************************************************************************************************************/
@@ -526,8 +556,11 @@ void GetTemp(){
 	SPDR0 = 0x00;
 	while (!(SPSR0 & (1 << SPIF0)));
 	rawTemp |= SPDR0;
-	//Set flag to correct value.
+	
+	//Set flag to correct value, update global value
 	flagGoodTemp = (rawTemp < HIGH_TEMP) ? fTrue : fFalse;
+	globalTemp=rawTemp;
+	
 	//re enable interrupts
 	sei();
 	
@@ -536,10 +569,49 @@ void GetTemp(){
 	SPCR0=0x00;	
 	//prtTEMPen &= ~(1 << bnTEMPen);
 	PRR0 |= (1 << PRSPI);
-
-	globalTemp=rawTemp;
 }
 /*************************************************************************************************************/
+void PowerUp(WORD interval){
+	cli();
+	
+	//First power on main regulator
+	__enableMain();
+	Wait_ms(interval);
+	
+	//Power on BeagleBone next, takes longer time.
+	__enableBeagleBone();
+	Wait_ms(interval);
+	while (!(pinBBio & (1 << bnW0B9)));	//Wait for GPIO line to go high
+	
+	//Power on GAVR and Enable GPS
+	__enableGPSandGAVR();
+	Wait_ms(interval);
+	while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
+	
+	//Power on LCD
+	__enableLCD();
+	Wait_ms(interval);
+	sei();
+	
+}
+/*************************************************************************************************************/
+void PowerDown(){
+	cli();
+	//Signify interrupts, wait 6 seconds for all processing to stop.
+	prtInterrupts |= (1 << bnBBint)|(1 << bnGAVRint);
+	Wait_sec(6);
+	prtInterrupts &= ~((1 << bnBBint)|(1 << bnGAVRint));
+	__killLCD();
+	__killGPSandGAVR();
+	
+	//Give the BeagleBone another 6 seconds to finish it's stuff, then kill it
+	Wait_sec(6);
+	__killBeagleBone();
+	__killMain();
+	sei();
+}
+/*************************************************************************************************************/
+
 
 
 
