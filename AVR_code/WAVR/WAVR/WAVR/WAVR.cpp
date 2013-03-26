@@ -35,7 +35,9 @@
 |				 same date for more information.
 |		   3/26- Integrated PCB pin declarations and started work on GAVR->WAVR. See "myUart.h"
 |				 ->'ReceiveGAVR()'. Startup procedures added. UART1 for GAVR added. Renamed
-|				 interrupt enables and kills to "__*CommINT()".
+|				 interrupt enables and kills to "__*CommINT()". (2) Tweaked for SPI/644PA, 
+|				 slightly differnet SPI register? Might just be the switch from the ATmega328??
+|				 See "myUart.h"->ReceiveGAVR(). Need to add overflow case for timer2/ReceiveGAVR
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -59,13 +61,13 @@ using namespace std;
 
 //USART/BAUD defines
 #define FOSC				20000000		//20 MHz
-#define ASY_OSC				32768		//32.768 kHz
+#define ASY_OSC				32768			//32.768 kHz
 #define BAUD				9600
-#define MYUBRR FOSC/16/BAUD - 1			//declares baud rate
+#define MYUBRR FOSC/16/BAUD - 1				//declares baud rate
 
 
-//Declare Time between power on triggers
-#define POWER_UP_INTERVAL	1000
+//Declare Time between power on triggers (in ms)
+#define POWER_UP_INTERVAL	3000
 
 //Declare timeout value
 #define COMM_TIMEOUT_SEC	3
@@ -91,8 +93,8 @@ using namespace std;
 #define __killMain()		 prtMAINen &= ~(1 << bnMAINen)
 
 //Interrupt Macros
-#define __killCommINT() {EIMSK=0x00; PCMSK0=0x00;}
-#define __enableCommINT() {EIMSK|= (1 << INT2);}
+#define __killCommINT() {EIMSK=0x00; PCMSK2=0x00;}
+#define __enableCommINT() {EIMSK|= (1 << INT2); PCMSK2 = (1 << PCINT17);}
 	
 //Forward Declarations
 void DeviceInit();
@@ -117,15 +119,16 @@ myTime currentTime;  //The clock, MUST BE GLOBAL. In final program, will initiat
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
 /*==============================================================================================================*/
-BOOL flagGoToSleep, flagReceivingBone,flagNormalMode;
+BOOL flagGoToSleep, flagReceivingBone,flagNormalMode,flagReceivingGAVR;
 /* flagGoToSleep: go to sleep on end of while(fTrue) loop														*/
 /* flagUARTbone: receiving info from the bone																	*/
 /* flagNormalMode: normal mode of operation, take ADC and temp readings											*/
+/* flagReceivingWAVR: receiving info from the GAVR
 /*==============================================================================================================*/
 
 
 /*==============================================================================================================*/
-BOOL flagUpdateGAVRTime, flagUpdateGAVRDate, flagSendingGAVR, flagUserDate, flagUserTime, flagInvalidDateTime, flagWaitingToSendGAVR;
+BOOL flagUpdateGAVRTime, flagUpdateGAVRDate, flagSendingGAVR, flagUserDate, flagUserTime, flagInvalidDateTime, flagWaitingToSendGAVR, flagNoGPSTime;
 /* flagUpdateGAVRtime: got a new time in from GPS, update GAVR													*/
 /* flagUpdateGAVRDate: restart with correct date, send to GAVR	---obsolete since we always send time with date */
 /* flagSendingGAVR: currently sending info to GAVR																*/
@@ -249,6 +252,14 @@ int main(void)
 			flagGoToSleep=fTrue;
 			flagNormalMode=fTrue;
 		}
+		/*
+		if (flagReceivingGAVR){
+			ReceiveGAVR();
+			__enableCommINT();
+			flagGoToSleep=fTrue;
+			flagNormalMode=fTrue;
+		}
+		*/
 	
 		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The interal send machine deals with the flags.
 		if (flagUpdateGAVRTime || flagUpdateGAVRDate || flagUserDate || flagUserTime){
@@ -292,6 +303,7 @@ int main(void)
 			__killCommINT();
 			flagGoToSleep = fTrue;
 			flagReceivingBone = fFalse;
+			flagNoGPSTime=fFalse;
 			saveDateTime_eeprom(fTrue,fTrue);
 			
 			//Kill power--Alert comes in that function
@@ -308,6 +320,7 @@ int main(void)
 			while (waitTime < 3 && restart){waitTime++; Wait_sec(1);}
 			flagUpdateGAVRDate=fTrue;
 			flagUpdateGAVRTime=fTrue;
+			flagNoGPSTime=fFalse;
 			//If we get to here, the flag is not reset or there was a timeout. If timout, goes to sleep and on the next cycle it's awake it will try and 
 			//get an updated date and time from the BeagleBone. Always update GAVR.			
 		}		
@@ -417,6 +430,7 @@ void AppInit(unsigned int ubrr){
 	flagUserDate=fFalse;
 	flagInvalidDateTime=fFalse;
 	flagWaitingToSendGAVR=fFalse;
+	flagNoGPSTime=fFalse;
 	
 	restart=fFalse;
 	flagNewShutdown=fFalse;
@@ -540,21 +554,21 @@ void GetTemp(){
 	WORD rawTemp = 0;
 	
 	//Power on temp monitor, let it settle
-	//prtTEMPen |= (1 << bnTEMPen);
+	prtTEMPen |= (1 << bnTEMPen);
 	PRR0 &= ~(1 << PRSPI);	
-	SPCR0 |= (1 << MSTR0)|(1 << SPE0)|(1 << SPR00);			//enables SPI, master, fck/64
-	Wait_ms(200);
+	SPCR |= (1 << MSTR)|(1 << SPE)|(1 << SPR0);			//enables SPI, master, fck/64
+	Wait_sec(1);
 	//Slave select goes low, sck goes low,  to signal start of transmission
 	prtSpi0 &= ~((1 << bnSck0)|(1 << bnSS0));
 	
 	cli();
 	//Write to buffer to start transmission
-	SPDR0 = 0x00;
+	SPDR = 0x00;
 	//Wait for data to be receieved.
-	while (!(SPSR0 & (1 << SPIF0)));
+	while (!(SPSR & (1 << SPIF)));
 	rawTemp = (SPDR0 << 8);
-	SPDR0 = 0x00;
-	while (!(SPSR0 & (1 << SPIF0)));
+	SPDR = 0x00;
+	while (!(SPSR & (1 << SPIF)));
 	rawTemp |= SPDR0;
 	
 	//Set flag to correct value, update global value
@@ -566,8 +580,8 @@ void GetTemp(){
 	
 	//Bring SS high, clear SPCR0 register and turn power off to SPI and device
 	prtSpi0 |= (1 << bnSS0)|(1 << bnSck0);
-	SPCR0=0x00;	
-	//prtTEMPen &= ~(1 << bnTEMPen);
+	SPCR=0x00;	
+	prtTEMPen &= ~(1 << bnTEMPen);
 	PRR0 |= (1 << PRSPI);
 }
 /*************************************************************************************************************/
@@ -581,12 +595,12 @@ void PowerUp(WORD interval){
 	//Power on BeagleBone next, takes longer time.
 	__enableBeagleBone();
 	Wait_ms(interval);
-	while (!(pinBBio & (1 << bnW0B9)));	//Wait for GPIO line to go high
+	//while (!(pinBBio & (1 << bnW0B9)));	//Wait for GPIO line to go high
 	
 	//Power on GAVR and Enable GPS
 	__enableGPSandGAVR();
 	Wait_ms(interval);
-	while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
+	//while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
 	
 	//Power on LCD
 	__enableLCD();
