@@ -41,6 +41,9 @@
 |				 (3)Instituted timeout for RecieveGAVR, added flag "flagWaitingForReceiveGAVR"
 |				 which is used to konw when to actually send a "I need something" to the GAVR->
 |				 differentiates the sending case and receiving case.
+|		   3/27- (1)Changed flagUserDate and flagUserTime to flagUserClock. Replaced flagUpdateGAVR*
+|				 with flagUpdateGAVRClock. See "myUart.h". Need to go over start procedure and 
+|				 make it solid for GAVR receive and send to work correctly.
 |================================================================================
 | *NOTES: (1)3/26- Currently, if the WAVR is going to update the time, but not the date, on the GAVR it has to 
 |			  receive the date first. THis is a problem. If statement needs to be changed and also the SendGAVR()
@@ -135,12 +138,10 @@ BOOL flagGoToSleep, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaiti
 
 
 /*==============================================================================================================*/
-BOOL flagUpdateGAVRTime, flagUpdateGAVRDate, flagSendingGAVR, flagUserDate, flagUserTime, flagInvalidDateTime, flagWaitingToSendGAVR, flagNoGPSTime;
-/* flagUpdateGAVRtime: got a new time in from GPS, update GAVR													*/
-/* flagUpdateGAVRDate: restart with correct date, send to GAVR	---obsolete since we always send time with date */
+BOOL flagUpdateGAVRClock, flagSendingGAVR, flagUserClock, flagInvalidDateTime, flagWaitingToSendGAVR, flagNoGPSTime;
+/* flagUpdateGAVRClock: Update the GAVR with time and date.														*/
 /* flagSendingGAVR: currently sending info to GAVR																*/
-/* flagUserDate: WAVR doesn't have a good lock on time, tell GAVR to get from user								*/
-/* flagUserTime: WAVR doesn't have a good lock on time, tell GAVR to get from user								*/
+/* flagUserDate: WAVR doesn't have a good lock on date and/or time, signifies GAVR providing it.				*/
 /* flagInvalidDateTime: the time/date we have currently is wrong/invalid										*/
 /* flagWaitingToSendGAVR: Unsuccessful transmission first time, let other things know we are waiting.			*/
 /*==============================================================================================================*/
@@ -270,7 +271,7 @@ int main(void)
 		
 	
 		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The internal send machine deals with the flags.
-		if (flagUpdateGAVRTime || flagUpdateGAVRDate || flagUserDate || flagUserTime && !flagWaitingForReceiveGAVR){
+		if ((flagUpdateGAVRClock  || flagUserClock) && !flagWaitingForReceiveGAVR){
 			__killCommINT();
 			sendGAVR();
 			__enableCommINT();
@@ -291,14 +292,13 @@ int main(void)
 		if (flagNormalMode){
 			TakeADC();
 			GetTemp();
-			//If both are good & shutodwn is low, keep it low. If shutdown is high, pull low and enable restart
+			//If both are good & shutdown is low, keep it low. If shutdown is high, pull low and enable restart
 			if (flagGoodVolts && flagGoodTemp){
-				PowerUp(POWER_UP_INTERVAL);
-				if( flagShutdown == fTrue){restart = fTrue;}
+				if(flagShutdown){restart = fTrue;}
 				flagShutdown = fFalse;
 			//If one is bad and shutdown is low, pull high as well as pull new shutdown high to indicate imminent power kill
 			} else {
-				if (flagShutdown == fFalse){
+				if (!flagShutdown){
 					flagNewShutdown = fTrue;
 				}
 				flagShutdown = fTrue;
@@ -326,8 +326,7 @@ int main(void)
 			//Check to see if pins are ready. Use timeout of 10 seconds for pins to come high.
 			int waitTime = 0;
 			while (waitTime < 3 && restart){waitTime++; Wait_sec(1);}
-			flagUpdateGAVRDate=fTrue;
-			flagUpdateGAVRTime=fTrue;
+			flagUpdateGAVRClock=fTrue;
 			flagNoGPSTime=fFalse;
 			//If we get to here, the flag is not reset or there was a timeout. If timout, goes to sleep and on the next cycle it's awake it will try and 
 			//get an updated date and time from the BeagleBone. Always update GAVR.			
@@ -337,10 +336,9 @@ int main(void)
 		if (flagGoToSleep){GoToSleep(flagShutdown);}
 		
 		//Add logic for an invalid date and time somehow getting in here
-		if (flagInvalidDateTime){
+		if (flagInvalidDateTime && !flagShutdown){
 			flagInvalidDateTime=fFalse;
-			flagUserTime=fTrue;
-			flagUserDate=fTrue;	//ask user to update/confirm both date and time
+			flagUserClock=fTrue;
 		}		
 					
 	}
@@ -431,11 +429,9 @@ void AppInit(unsigned int ubrr){
 	flagReceivingBone = fFalse;
 	flagNormalMode=fTrue;
 
-	flagUpdateGAVRTime=fFalse;
-	flagUpdateGAVRDate=fFalse;
+	flagUpdateGAVRClock=fFalse;	//this might need to be high
 	flagSendingGAVR=fFalse;
-	flagUserTime=fFalse;
-	flagUserDate=fFalse;
+	flagUserClock=fFalse;
 	flagInvalidDateTime=fFalse;
 	flagWaitingToSendGAVR=fFalse;
 	flagNoGPSTime=fFalse;

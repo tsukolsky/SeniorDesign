@@ -20,6 +20,9 @@
 |				  (3)Finished ReceiveGAVR(). Should be good to go. Just need to test. Added new flag
 |				   flagWaitingForReceiveGAVR whcih is triggered after the WAVR asks for the userDate
 |				   or userTime.
+|			3/27: (1)Changed flag structure so that only one flag for needing date/time from GAVR, one
+|				  flag for receiving since the GPS can send the date too. Need to tweak ReceiveBone()
+|				  string parsing.
 |================================================================================
 | *NOTES: This is the UART for the WAVR.
 \*******************************************************************************/
@@ -37,12 +40,10 @@ void printTimeDate(BOOL WAVRorBone=fFalse, BOOL pTime=fTrue,BOOL pDate=fTrue);
 
 
 //Declare external flags and clock.
-extern BOOL flagSendingGAVR, flagUserDate, flagUserTime, flagUpdateGAVRTime, flagUpdateGAVRDate, flagInvalidDateTime, flagWaitingToSendGAVR, flagNoGPSTime;
+extern BOOL flagSendingGAVR, flagUserClock, flagUpdateGAVRClock, flagInvalidDateTime, flagWaitingToSendGAVR, flagNoGPSTime;
 extern BOOL flagReceivingBone, flagFreshStart, restart, flagReceivingGAVR,flagWaitingForReceiveGAVR;
 extern WORD globalADC, globalTemp;
 extern myTime currentTime;
-
-#define updatingGAVR (flagUpdateGAVRDate || flagUpdateGAVRTime)
 
 /**************************************************************************************************************/
 void PutUartChBone(char ch){
@@ -128,31 +129,23 @@ void sendGAVR(){
 				break;
 				}//end case 1
 			case 2: {
-				if (!strcmp(recString,"ACKW.")){state=3;}
-				else if (!strcmp(recString,"ACKGD.")){state=4;}
-				else if (!strcmp(recString,"ACKGT.")){state=4;}
-				else if (!strcmp(recString,"ACKGB.")){state=4;}
-				else if (!strcmp(recString,"ACKBAD.")){state=6;}
+				if (!strncmp(recString,"ACKW.",5)){state=3;}
+				else if (!strncmp(recString,"ACKGB.",6)){state=4;}
+				else if (!strncmp(recString,"ACKBAD.",7)){state=6;}
 				//send string case.
-				else if (updatingGAVR && !strcmp(recString,sentString)){state=5;}		//they match, successful send.
-				else if (updatingGAVR && strcmp(recString,sentString) && strcmp(recString,"ACKBAD.")){state=7;}	//string isnt the same as ACKBAD or what we sent.
+				else if (flagUpdateGAVRClock && !strcmp(recString,sentString)){state=5;}		//they match, successful send.
+				else if (flagUpdateGAVRClock && strcmp(recString,sentString) && strcmp(recString,"ACKBAD.")){state=7;}	//string isnt the same as ACKBAD or what we sent.
 				else{state=7;} //invalid ack. ACKERROR goes here.
 				break;
 				}//end case 2
 			case 3:{
-				if (flagUserDate&&!flagUserTime){
-					PrintGAVR("SYNGD.");
-					flagWaitingForReceiveGAVR=fTrue;
-				} else if (!flagUserDate&&flagUserTime){
-					PrintGAVR("SYNGT.");
-					flagWaitingForReceiveGAVR=fTrue;
-				} else if (flagUserTime&&flagUserDate){
+				if (flagUserClock){
 					PrintGAVR("SYNGB.");
 					flagWaitingForReceiveGAVR=fTrue;
 				} else;
 				
 				//If we are updating the gavr, send the time and date together regardless. preface with SYN
-				if (updatingGAVR && !(flagUserDate || flagUserTime)){
+				if (flagUpdateGAVRClock && !flagUserClock){
 					strcpy(sentString,"SYN");			//this is a syn, not ack to save logic in GAVR code. Can change if we want.
 					strcat(sentString,currentTime.getTime());
 					strcat(sentString,"/");	//add delimiter.
@@ -211,10 +204,8 @@ void sendGAVR(){
 	
 	//If we aren't waiting for the next round, don't reset the flags. If we are waiting, just reset the waiting flag. Like a stack popping
 	if (!flagWaitingToSendGAVR){
-		flagUserDate=fFalse;
-		flagUserTime=fFalse;
-		flagUpdateGAVRDate=fFalse;
-		flagUpdateGAVRTime=fFalse;		
+		flagUserClock=fFalse;
+		flagUpdateGAVRClock=fFalse;	
 	} else {flagWaitingToSendGAVR=fFalse;}
 }//end function 	
 	
@@ -274,11 +265,9 @@ void ReceiveBone(){
 						else {state=4;}
 						
 						//Decide what I need to save and which flags need to go up.	
-						if (success && !restart && !flagFreshStart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRTime=fTrue;}
-						else if (success && !restart && flagFreshStart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRTime=fTrue; flagUserDate=fTrue;}
-						else if (success && restart){saveDateTime_eeprom(fTrue,fFalse); flagUpdateGAVRDate=fTrue; flagUpdateGAVRTime=fTrue;;}
-						else if (!success && restart){flagUpdateGAVRTime=fTrue; flagUpdateGAVRDate=fTrue;}	//sends eeprom time and date
-						else if (!success && flagFreshStart && !restart){flagUserTime=fTrue; flagUserDate=fTrue;} //need to get user time and date
+						if (success){saveDateTime_eeprom(fTrue,fTrue); flagUpdateGAVRClock=fTrue;}		//Sends date and time just gotten from GPS
+						else if (!success && restart){flagUpdateGAVRClock=fTrue;}						//sends eeprom time and date
+						else if (!success && flagFreshStart && !restart){flagUserClock=fTrue;}			//need to get user time and date
 						else;
 						//Reset flags for startup
 						if (restart){restart=fFalse;}
@@ -374,7 +363,7 @@ void ReceiveGAVR(){
 				}//end case 2
 				case 3:{
 					//Parse for date/time case
-					if (flagUserDate || flagUserTime){
+					if (flagUserClock){
 						//Go through the string and parse for the time. Must go through the time to get the date.
 						BOOL successTime=fFalse, successDate=fFalse;			//whether or not we have successfully parsed string
 						int counter=0;
@@ -405,38 +394,37 @@ void ReceiveGAVR(){
 						}
 						
 						//If flag for Date is set, then parse the string and do something with it.
-						if (flagUserDate){
-							//Now get the date. have to null the tempStringNum
-							for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}	//reset the string
-							placement=0;
-							counter++;	//get past the '/'
-							
-							//Loop through the string. If not end of file and counter isn't end of string, and not terminator '.', continue
-							while (recString[counter] != '.' && recString[counter] != '\0' && counter != strLoc){
-								//If char isn't sepaerator or end of string of dmy has been hit, add to buffer
-								if  (recString[counter] != ',' && dmy < 3){
-									tempStringNum[placement++]=recString[counter];
-								//If a comma was found, need to store that sucker in the tempNum1[x]. dmy needs to be 0 or 1 aka month or day.
-								} else if (dmy<2 && recString[counter]==','){
-									tempNum1[dmy++] = atoi(tempStringNum);
-									for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}
-									placement=0;
-								} else;
-								counter++;							
-							}//end while
-							//Assign last date if the reason we broke the while loop was a '.'. If not, ACKBAD and exit.
-							if (recString[counter] == '.'){
-								tempNum1[dmy] = atoi(tempStringNum);
-								successDate=fTrue;
-							} else {//something in the string was wrong, ACKBAD and then exit
-								PrintGAVR("ACKBAD.");
-								state=5;
-							}
-						}//end if flagUserDate						
-	
+						//Now get the date. have to null the tempStringNum
+						for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}	//reset the string
+						placement=0;
+						counter++;	//get past the '/'
+						
+						//Loop through the string. If not end of file and counter isn't end of string, and not terminator '.', continue
+						while (recString[counter] != '.' && recString[counter] != '\0' && counter != strLoc){
+							//If char isn't sepaerator or end of string of dmy has been hit, add to buffer
+							if  (recString[counter] != ',' && dmy < 3){
+								tempStringNum[placement++]=recString[counter];
+							//If a comma was found, need to store that sucker in the tempNum1[x]. dmy needs to be 0 or 1 aka month or day.
+							} else if (dmy<2 && recString[counter]==','){
+								tempNum1[dmy++] = atoi(tempStringNum);
+								for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}
+								placement=0;
+							} else;
+							counter++;							
+						}//end while
+						//Assign last date if the reason we broke the while loop was a '.'. If not, ACKBAD and exit.
+						if (recString[counter] == '.'){
+							tempNum1[dmy] = atoi(tempStringNum);
+							successDate=fTrue;
+						} else {//something in the string was wrong, ACKBAD and then exit
+							PrintGAVR("ACKBAD.");
+							state=5;
+						}
+										
 						//Make sure the settings are okay before setting the time. If not, send ACKBAD and exit.
-						if (tempNum[0]/24==0 && tempNum[1]/60==0 && tempNum[2]/60==0 && flagUserTime && successTime){
+						if (tempNum[0]/24==0 && tempNum[1]/60==0 && tempNum[2]/60==0 && successTime){
 							currentTime.setTime(tempNum[0],tempNum[1],tempNum[2]);
+							saveDateTime_eeprom(fTrue,fFalse);
 							flagNoGPSTime=fTrue;
 						} else {
 							PrintGAVR("ACKBAD.");
@@ -444,8 +432,9 @@ void ReceiveGAVR(){
 						}//end if-else time
 						
 						//Make sure the date is correct before setting it. If not, send ACKBAD. and exit.
-						if (tempNum1[0]/13==0 && tempNum1[1]/32==0 && tempNum1[2]/2000>=1 && flagUserDate && successDate){
+						if (tempNum1[0]/13==0 && tempNum1[1]/32==0 && tempNum1[2]/2000>=1 && successDate){
 							currentTime.setDate(tempNum1[0],tempNum1[1], tempNum1[2]);
+							saveDateTime_eeprom(fFalse,fTrue);
 						} else {
 							PrintGAVR("ACKBAD.");
 							state=5;
@@ -453,35 +442,26 @@ void ReceiveGAVR(){
 						}//end if-else date
 						
 						//If we wanted date and got it correctly, or wanted time and got it correctly, go to state 7 to ack with the appropriate response
-						if ((flagUserDate && successDate) && (flagUserTime && successTime)){
-							flagUserDate=fFalse;
-							flagUserTime=fFalse;
-							flagWaitingForReceiveGAVR=fFalse;
-							state=7;
-						} else if (flagUserDate && successDate && !flagUserTime){
-							flagUserDate=fFalse;
-							flagWaitingForReceiveGAVR=fFalse;
-							state=7;
-						} else if (flagUserTime && successTime && !flagUserDate){
-							flagUserTime=fFalse;
+						if (flagUserClock && successDate && successTime){
+							flagUserClock=fFalse;
 							flagWaitingForReceiveGAVR=fFalse;
 							state=7;
 						} else {
 							PrintGAVR("ACKBAD.");
 							state=5;
 						}																										
-					} else {	//don't need the date, wasn't looking for it. Respond with ACKNO. Should reset all flags on GAVR side.
+					} else {	//don't need the date or time, wasn't looking for it. Respond with ACKNO. Should reset all flags on GAVR side.
 						PrintGAVR("ACKNO.");
 						state=5;
-					}// end if-else (flagUserDate || flagUserTime)					
+					}					
+					// end if-else (flagUserClock)					
 					//Exit
 					break;
 					}//end case 3				
 				case 4:{
 					//Successful SYNNEED case.
-					if (!flagUserDate && !flagUserTime){	//If we don't need the date or time, update with what we have.
-						flagUpdateGAVRDate=fTrue;
-						flagUpdateGAVRTime=fTrue;
+					if (!flagUserClock){	//If we don't need the date or time, update with what we have.
+						flagUpdateGAVRClock=fTrue;
 						PrintGAVR("ACKNEED.");				//respond with correct ack
 					} else {
 						PrintGAVR("ACKNO.");	//say we can't give you anything, ask the user.
