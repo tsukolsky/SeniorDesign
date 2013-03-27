@@ -21,13 +21,8 @@
 #include <string.h>
 #include "stdtypes.h"
 
-//Implementations for interrupt resets and sets
-#define __killLevel1INT() PCMSK0 = 0x00; EIMSK=0x00;		//disable any interrupt that might screw up reception. Keep the clock ticks going though
-#define __enableLevel1INT() PCMSK0 |= (1 << PCINT0); EIMSK |= (1 << INT2);
-
-
 //Declare external flags and clock.
-extern BOOL flagUARTWAVR, flagGetUserDate, flagGetUserTime, justStarted;
+extern BOOL flagReceiveWAVR, flagReceiveBone, flagSendWAVR, flagSendBone, flagGetUserClock, justStarted;
 extern myTime currentTime;
 
 /**************************************************************************************************************/
@@ -62,7 +57,6 @@ void PrintWAVR(char string[]){
 //Only two things should ever be transmitted to this device. The Time or the request for the user to set date.If the
 //request for user to set date happens
 void ReceiveWAVR(){
-	/*****Kill unnecessary Interrupts*****/
 	sei();	//make sure clock is still functioning, everything else should be killed by this point though.
 	
 	//Declare variables to be used.
@@ -95,23 +89,23 @@ void ReceiveWAVR(){
 			break;
 			}
 		case 1: {
-			while (noCarriage && flagUARTWAVR){
-				while (!(UCSR1A & (1 << RXC1)) && flagUARTWAVR);	//wait for this sucker to come in
+			while (noCarriage && flagReceiveWAVR){
+				while (!(UCSR1A & (1 << RXC1)) && flagReceiveWAVR);	//wait for this sucker to come in
 				recChar=UDR1;
 				recString[strLoc++]=recChar;
 				if (recChar=='.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
 				else {
 					//	recString[strLoc++] = recChar;
-					if (strLoc >= 19){strLoc = 0; noCarriage = fFalse; flagUARTWAVR=fFalse; PrintWAVR("ACKERROR."); state=0;}
+					if (strLoc >= 19){strLoc = 0; noCarriage = fFalse; flagReceiveWAVR=fFalse; PrintWAVR("ACKERROR."); state=0;}
 				}
 			}//end while noCarriage
 			break;
 			}
 		case 2: {
 			if (!strcmp(recString,"SYNDONE.")){state=4;}
-			else if (!strcmp(recString,"SYNGD.")){flagGetUserDate=fTrue; PrintWAVR("ACKGD.");state=4;}
-			else if (!strcmp(recString,"SYNGT.")){flagGetUserTime=fTrue; PrintWAVR("ACKGT."); state=4;}
-			else if (!strcmp(recString,"SYNGB.")){flagGetUserDate=fTrue; flagGetUserTime=fTrue; PrintWAVR("ACKGB."); state=4;}
+			else if (!strcmp(recString,"SYNGD.")){flagGetUserClock=fTrue; PrintWAVR("ACKGD.");state=4;}
+			else if (!strcmp(recString,"SYNGT.")){flagGetUserClock=fTrue; PrintWAVR("ACKGT."); state=4;}
+			else if (!strcmp(recString,"SYNGB.")){flagGetUserClock=fTrue; PrintWAVR("ACKGB."); state=4;}
 			else if ((recString[4]==':') != (recString[5]==':')){state=3;}	//go parse the string
 			else {PrintWAVR("ACKERROR.");state=4;}
 			break;
@@ -151,18 +145,22 @@ void ReceiveWAVR(){
 		case 4:{
 			state=0;
 			//Do anythingi extra here for a reset.
-			flagUARTWAVR=fFalse;
+			flagReceiveWAVR=fFalse;
 		}
-		default: {state=0; flagUARTWAVR=fFalse; break;}
+		default: {state=0; flagReceiveWAVR=fFalse; break;}
 			
 	}//end switch	
 	/*----------------------------------------------------------END STATE MACHINE--------------------------------------------------------------------------*/
 		
-	} while (flagUARTWAVR); //end do while						
+	} while (flagReceiveWAVR); //end do while						
 }//end function
 	
 	
-
+/*************************************************************************************************************/
+void ReceiveBone(){}
+/*************************************************************************************************************/
+void SendWAVR(BOOL askOrSend){}
+/*************************************************************************************************************/
 /*************************************************************************************************************/
 
 //To print to WAVR, cariable needs to be false. Print to Bone requires WAVRorBone to be true

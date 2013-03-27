@@ -173,6 +173,7 @@ BOOL flagNewShutdown, flagShutdown,flagGoodTemp, flagGoodVolts, restart, flagFre
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 //PCINT_17: Getting information from the GAVR
 ISR(PCINT2_vect){
+	cli();
 	if ((PINC & (1 << PCINT17)) && !flagShutdown){
 		//Do work, correct interrupt
 		UCSR1B |= (1 << RXCIE1);
@@ -182,10 +183,12 @@ ISR(PCINT2_vect){
 		//Acknowledge
 		PrintGAVR("ACKG");
 	}
+	sei();
 }	
 
 //INT2: Getting information from BeagleBone
 ISR(INT2_vect){	//about to get time, get things ready
+	cli();
 	if (!flagShutdown){		//If things are off, don't let noise do an interrupt. Shouldn't happen anyways.
 		UCSR0B |= (1 << RXCIE0);
 		flagGoToSleep=fFalse;	//no sleeping, wait for UART_RX
@@ -193,11 +196,13 @@ ISR(INT2_vect){	//about to get time, get things ready
 		__killCommINT();
 		//Acknowledge connection, disable INT2_vect
 		PrintBone("ACKT");
-	}	
+	}
+	sei();
 }
 
 //RTC Timer.
 ISR(TIMER2_OVF_vect){
+	cli();
 	volatile static int gavrSendTimeout=0, boneReceiveTimeout=0, gavrReceiveTimeout=0, startupTimeout=0;
 	
 	currentTime.addSeconds(1);
@@ -229,19 +234,24 @@ ISR(TIMER2_OVF_vect){
 		startupTimeout=0;
 	} else if (!(flagFreshStart || restart) && startupTimeout > 0){startupTimeout=0;}
 	else;
+	sei();
 }//End timer 2 overflow.
 
 //UART Receive from BeagleBone
 ISR(USART0_RX_vect){
+	cli();
 	UCSR0B &= ~(1 << RXCIE0);
 	__killCommINT();				//make sure all interrupts are disabled that could cripple protocol
 	flagReceivingBone=fTrue;
+	sei();
 }
 
 ISR(USART1_RX_vect){
+	cli();
 	UCSR1B &= ~(1 <<RXCIE1);	//disable interrupt
 	__killCommINT();
 	flagReceivingGAVR=fTrue;
+	sei();
 }
 
 /*--------------------------END-Interrupt Service Routines--------------------------------------------------------------------------------*/

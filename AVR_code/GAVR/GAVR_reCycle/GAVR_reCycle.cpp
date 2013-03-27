@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 3/14/13
+| Last Revised: 3/27/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -12,22 +12,32 @@
 |			, and keep track of Trips. For more information and code for development
 |			modules contact Todd Sukolsky at tsukolsky@gmail.com.
 |--------------------------------------------------------------------------------
-| Revisions: 2/12- Initial Build. Demoing on ATmega644PA. Final implementation is ATmega2560
-|			 2/xx- Integrated RTC, started wtih startup procedures. Tried to get
-|				   communication from WAVR working, not quite right. Did get simple
-|				   back and forth talking with BeagleBone working.
-|			 3/4- Implemented state machine to receive strings from WAVR, next is 
+| Revisions:2/12- Initial Build. Demoing on ATmega644PA. Final implementation is ATmega2560
+|			2/xx- Integrated RTC, started wtih startup procedures. Tried to get
+|				  communication from WAVR working, not quite right. Did get simple
+|				  back and forth talking with BeagleBone working.
+|			3/4-  Implemented state machine to receive strings from WAVR, next is 
 |				  to get communication with Bone working and Trip storage management.
 |				  Moved all UART transmissions and receive protocols to an external
 |				  file "myUart.h".
 |			3/14- Checked over GAVR->WAVR transmission in myUart.h, looks good. Just
 |				  need to field test now. Small tweaks possibly in main to make code look better.
+|			3/27- Started finalizing communication protocols and integration. LCD code
+|				  not yet working, so just getting everything ready. Fixed flags to work with WAVR
+|				  correctly, made comments for flags and switched small logic for getting the user
+|				  date and time (see main program loop). Deleted some functions for receive/send that
+|				  were VERY wrong, switcehd to ATmega2560 registers and initializations. All uart
+|				  transmission/reception in "myUart.h" now.
+|================================================================================
+| Revisions Needed:
 |				  
 |================================================================================
 | *NOTES: (1) This document is stored in the GIT repo @ https://github.com/tsukolsky/SeniorDesign.git/AVR_CODE/GAVR.
 |			  Development is also going on in that same repo ../HR_TEST for heart
 |			  rate sensing and speed detection using a reed swithc. Trip features
 |			  are also being tested in that module.
+|		  (2) "Waiting" timeouts can be dealt with in the main program loop, not in interrupt,
+|			  since they will be going through them anyways.
 \*******************************************************************************/
 
 using namespace std;
@@ -44,105 +54,148 @@ using namespace std;
 #include "stdtypes.h"		//holds standard type definitions
 #include "myTime.h"			//myTime class, includes the myDate.h inherently
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
-#include "ATmegaXX4PA.h"
+#include "ATmega2560.h"
 #include "myUart.h"
 
-//Defines for Frequency and Baud Rates
-#define FOSC 20000000
+/*****************************************/
+/**			UART Frequency/BAUD			**/
+/*****************************************/
+#define FOSC 16000000
 #define BAUD 9600
 #define MYUBRR FOSC/16/BAUD -1	//declares Baud Rate for UART
 
-//Implementations for interrupt resets and sets
-#define __killLevel1INT() PCMSK0 = 0x00; EIMSK=0x00;		//disable any interrupt that might screw up reception. Keep the clock ticks going though
-#define __enableLevel1INT() PCMSK0 |= (1 << PCINT0); EIMSK |= (1 << INT2);
+/*****************************************/
+/**			TIMEOUT DEFINITIONS			**/
+/*****************************************/
+#define COMM_TIMEOUT_SEC 3
+#define STARTUP_TIMEOUT_SEC 40
 
+/*****************************************/
+/**			Interrupt Macros			**/
+/*****************************************/
+#define __killCommINT() EIMSK &= ~((1 << INT0)|(1 << INT1))		//disable any interrupt that might screw up reception. Keep the clock ticks going though
+#define __enableCommINT()  EIMSK |= (1 << INT0)|(1 << INT1)
+#define __killSpeedINT() EIMSK &= ~(1 << INT6)
+#define __enableSpeedINT() EIMSK |= (1 << INT6)
 
+/*****************************************/
+/**			Foward Declarations			**/
+/*****************************************/
 void DeviceInit();
 void AppInit(unsigned int ubrr);
 void EnableRTCTimer();
 void Wait_ms(volatile int delay);
 void Wait_sec(volatile int delay);
-void SendToWAVR(BOOL sTime=fFalse, BOOL sDate=fFalse);
-void SendToBone();
-void ReceiveBone();
 
-//Flags
-BOOL justStarted,flagUARTWAVR, flagUARTBone, flagGetUserDate, flagGetUserTime, flagSendTimeToWAVR, flagSendDateToWAVR;
-BOOL flagWaitingForWAVR, flagWaitingForBone;
+/*********************************************GLOBAL FLAGS*******************************************************/
+/****************************************************************************************************************/
+/*==============================================================================================================*/
+BOOL justStarted, flagQUIT, flagGetUserClock, flagWAVRtime;
+/* justStarted: Whether or not the chip just started up. If so, there is a startup timeout and procedure with	*/
+/*				flags that goes on to accurately set the Time and Date											*/
+/* flagQUIT: We are about to get shut down, need to quick save everything in EEPROM and then just go into		*/
+/*			 down mode.																							*/
+/* flagWAVRtime: Whether or not we are using time that was sent from the WAVR or time that we got from the user.*/
+/* flagGetUserClock: WAVR needs the time (GPS not valid), need to get it from the user							*/
+/*																												*/
+/*==============================================================================================================*/
 
-//Global Variables
-volatile int startUpTimeout=0;
+/*==============================================================================================================*/
+BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingForWAVR, flagWaitingForBone;
+/* flagReceiveWAVR: We are receiving, or about to receive, transmission from WAVR								*/
+/* flagSendWAVR: Sending to WAVR, or about to. We need to ask the WAVR for date/time or send it the date and	*/
+/*				  time it asked for.																			*/
+/* flagReceiveBone: Receiving, or about to receive, the transmission from the BeagleBone						*/
+/* flagSendBone: Sending to, or about to send, information to the Bone											*/
+/* flagWaitingForWAVR: Waiting to receive a UART string from WAVR, let main program know that with this flag.	*/
+/* flagWaitingForBone: Waiting to receive a UART string from the BONE, this alerts main program.				*/
+/*==============================================================================================================*/
+
+
+/*****************************************/
+/**			Global Variables			**/
+/*****************************************/
 myTime currentTime;			//The clock, must be global. Initiated as nothing.
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
-ISR(PCINT0_vect){	// got a signal from Watchdog that time is about to be sent over.
-	volatile static int debounceNumber=0;
-	if (PINA & (1 << PCINT0)){	//rising edge on PCINT0
-		debounceNumber++;
-		if (debounceNumber>0){
-			cli();
-			flagWaitingForBone=fTrue;
-			UCSR0B |= (1 << RXCIE0);
-			PCMSK0 &= ~(1 << PCINT0);				//disable all PCINTs, INT2
-			EIMSK = 0x00;
-			//Wait for UART0 signal now, otherwise do nothing
-			PrintBone("ACKB");			//ACK grom GAVR
-			sei();
-			debounceNumber=0;
-		}	
-	} else;
+//INT0, getting something from the watchdog
+ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over.
+	cli();
+	flagWaitingForWAVR=fTrue;
+	UCSR1B |= (1 << RXCIE1);
+	__killCommINT();
+	//Wait for UART0 signal now, otherwise do nothing
+	PrintBone("ACKW");			//ACK grom GAVR
+	sei();
 }
 
-ISR(INT2_vect){
-	volatile static int debounceNumber=0;
-	debounceNumber++;
-	if(debounceNumber>0){
-		cli();
-		flagWaitingForWAVR=fTrue;
-		UCSR1B |= (1 << RXCIE1);	//enable receiver 1
-		__killLevel1INT();
-		PrintWAVR("ACKW");			//Ack from GAVR
-		sei();
-		debounceNumber=0;
-	} else;
+//INT1, getting something from the BeagleBone
+ISR(INT1_vect){
+	cli();
+	flagWaitingForBone=fTrue;
+	UCSR0B |= (1 << RXCIE0);	//enable receiver 1
+	__killCommINT();
+	PrintWAVR("ACKB");			//Ack from GAVR
+	sei();
+}
+
+//INT6->IMMININENT SHUTDOWN
+ISR(INT6_vect){
+	flagQUIT=fTrue;
+}
+
+//INT7-> Speed magnet went around.
+ISR(INT7_vect){
+	//Do something with speed/odometer/trip thing.
 }
 
 ISR(TIMER2_OVF_vect){
-	volatile static int WAVRtimeout=0, BONEtimeout=0;
-	pinSTATUSled2 |= (1 << bnSTATUSled2);
+	volatile static int WAVRtimeout=0, BONEtimeout=0, startupTimeout=0;
+	//pinSTATUSled2 |= (1 << bnSTATUSled2);
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
 	//Timeout functionality
 			
 	//If WAVR timout is reached (10 seconds) and one of the flags is still up, reset the timeout, bring flags down and enable interrupt pins again		
-	if (WAVRtimeout <=3 && (flagUARTWAVR || flagWaitingForWAVR)){WAVRtimeout++;}
-	else if ((WAVRtimeout > 3) && (flagUARTWAVR || flagWaitingForWAVR)){WAVRtimeout=0; flagUARTWAVR=fFalse; flagWaitingForWAVR=fFalse; PCMSK0 |=(1 << PCINT0); EIMSK = (1 << INT2);}
-	else if (!flagUARTWAVR && !flagWaitingForWAVR && WAVRtimeout > 0){WAVRtimeout=0;}	//Both flags aren't set, make sure the timeout is 0
+	if (WAVRtimeout <= COMM_TIMEOUT_SEC && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout++;}
+	else if ((WAVRtimeout > COMM_TIMEOUT_SEC) && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout=0; flagReceiveWAVR=fFalse; flagWaitingForWAVR=fFalse; __enableCommINT();}
+	else if (!flagReceiveWAVR && !flagWaitingForWAVR && WAVRtimeout > 0){WAVRtimeout=0;}	//Both flags aren't set, make sure the timeout is 0
 	else;
 	
-	if (BONEtimeout <=3 && (flagUARTBone || flagWaitingForBone)){BONEtimeout++;}	
-	else if (BONEtimeout > 3 && (flagUARTBone || flagWaitingForBone)){BONEtimeout=0; flagUARTBone=fFalse; flagWaitingForBone=fFalse; EIMSK = (1 << INT2); PCMSK0 |= (1 << PCINT0);}
-	else if (!flagUARTBone && !flagWaitingForBone && BONEtimeout >0){BONEtimeout=0;}
+	if (BONEtimeout <= COMM_TIMEOUT_SEC && (flagReceiveBone || flagWaitingForBone)){BONEtimeout++;}	
+	else if (BONEtimeout > COMM_TIMEOUT_SEC && (flagReceiveBone || flagWaitingForBone)){BONEtimeout=0; flagReceiveBone=fFalse; flagWaitingForBone=fFalse; __enableCommINT();}
+	else if (!flagReceiveBone && !flagWaitingForBone && BONEtimeout >0){BONEtimeout=0;}
 	else;
 	
 	//If we just started, increment the startUpTimeout value. When it hits 30, logic goes into place for user to enter time and date
-	if (justStarted){startUpTimeout++; if (startUpTimeout>35) {justStarted=fFalse;}}//take out that second if inside for final implemenation.
-	else if (!justStarted);
+	if (justStarted && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
+	else if (justStarted && startupTimeout > STARTUP_TIMEOUT_SEC){
+		startupTimeout=0; 
+		justStarted=0;
+		if (!flagWAVRtime){flagGetUserClock=fTrue;}				//if we haven't gotten the date and time from WAVR yet, say that we need it.
+		else {flagGetUserClock=fFalse;}
+	}
+	else if (!justStarted && startupTimeout > 0){startupTimeout=0;}
 	else;
+	
 }
 
 //ISR for beaglebone uart input
 ISR(USART0_RX_vect){
+	cli();
 	flagWaitingForBone=fFalse;
 	UCSR0B &= ~(1 << RXCIE0);
-	flagUARTBone=fTrue;
+	flagReceiveBone=fTrue;
+	sei();
 }
 
 //ISR for WAVR uart input. 
 ISR(USART1_RX_vect){
+	cli();
 	flagWaitingForWAVR=fFalse;
 	UCSR1B &= ~(1 << RXCIE1);	//clear interrupt. Set UART flag
-	flagUARTWAVR=fTrue;
+	flagReceiveWAVR=fTrue;
+	sei();
 }	
 /*--------------------------END-Interrupt Service Routines--------------------------------------------------------------------------------*/
 /*--------------------------START-Main Program--------------------------------------------------------------------------------------------*/
@@ -156,61 +209,49 @@ int main(void)
 	getDateTime_eeprom(fTrue,fTrue);	//Get last saved date and time.
 	sei();
     while(fTrue)
-    {
-		if (justStarted){
-			//If after 30 seconds we haven't gotten anything, ask for date and then send to WAVR
-			if(startUpTimeout > 30){
-				flagGetUserTime=fTrue;
-				flagGetUserDate=fTrue;
-				flagSendDateToWAVR=fTrue;
-				flagSendTimeToWAVR=fTrue;
-				justStarted=fFalse;
-			}
-		} else if (!justStarted){
-			//Make sure STARTING LED gets turned off
-			prtDEBUGleds &= ~(1 << bnSTARTINGled);
-		} else {asm volatile("nop");}
-		
+    {	
 		//Receiving from WAVR. Either a time string or asking user to set date/time/both.
-		if (flagUARTWAVR){
-			__killLevel1INT();
-			prtDEBUGleds |= (1 << bnWAVRCOMMled);
+		if (flagReceiveWAVR && !flagQUIT){
+			//prtDEBUGleds |= (1 << bnWAVRCOMMled);
 			ReceiveWAVR();
-			__enableLevel1INT();
-			prtDEBUGleds &= ~(1 << bnWAVRCOMMled);
+			__enableCommINT();
+			//prtDEBUGleds &= ~(1 << bnWAVRCOMMled);
 		}
 		
 		//Receiving from the Bone. Could be a number of things. Needs to implement a state machine.
-		if (flagUARTBone){
-			prtDEBUGleds |= (1 << bnBONECOMMled);
+		if (flagReceiveBone && !flagQUIT){
+			//prtDEBUGleds |= (1 << bnBONECOMMled);
 			ReceiveBone();
-			prtDEBUGleds &= ~(1 << bnBONECOMMled);
-			flagUARTBone=fFalse;
+			//prtDEBUGleds &= ~(1 << bnBONECOMMled);
+			__enableCommINT();
+			flagReceiveBone=fFalse;
 		}			
 		
-		//Date is not valid, need to ask user for it
-		if (flagGetUserDate || flagGetUserTime){
-			if (flagGetUserDate && flagGetUserTime){
-				prtDEBUGleds |= (1 << bnUSERDATEled)|(1 << bnUSERTIMEled);
-				Wait_sec(3);
-				flagGetUserTime=fFalse;
-				flagGetUserDate=fFalse;
-				//SendToWAVR(fTrue,fTrue);
-				prtDEBUGleds &= ~((1 << bnUSERDATEled)|(1 << bnUSERTIMEled));
-			} else if (flagGetUserDate && !flagGetUserTime){
-				prtDEBUGleds |= (1 << bnUSERDATEled);
-				Wait_sec(3);
-				flagGetUserDate=fFalse;
-				//SendToWAVR(fFalse,fTrue);
-				prtDEBUGleds &= ~(1 << bnUSERDATEled);
-			} else {
-				prtDEBUGleds |= (1 << bnUSERTIMEled);
-				//SendToWAVR(fTrue,fFalse);
-				Wait_sec(3);
-				flagGetUserTime=fFalse;
-				prtDEBUGleds &= ~(1 << bnUSERTIMEled);
-			}//end else.
-		}//end if userDate or userTime		
+		//Send either "I need the date or time" or "Here is the date and time you asked for
+		if (flagSendWAVR && !flagQUIT){
+			__killCommINT();
+			SendWAVR(flagGetUserClock);
+			__enableCommINT();
+		}
+		
+		//WAVR hasn't updated the time, need to get it from user...make sure WAVR isn't about to send the time, or waiting to
+		if (flagGetUserClock && !flagWaitingForWAVR && !flagQUIT){
+			//Get the time and date from the user
+			//if time/date valid, set, save,send
+			BOOL valid=fFalse;
+			if (valid){flagSendWAVR=fTrue; flagWAVRtime=fFalse;}				//SendWAVR will reset flagGetUserClock
+			else {flagSendWAVR=fFalse;}
+		}			
+		
+		if (flagQUIT){
+			//Save all trip date into EEPROM with "unfinished/finished" label.
+			
+			//Power Down
+			SMCR = (1 << SM1);		//power down mode
+			SMCR |= (1 << SE);		//enable sleep
+			asm volatile("SLEEP");	//go to sleep
+		}		
+			
     }//end while
 }//end main
 
@@ -221,10 +262,24 @@ void DeviceInit(){
 	DDRB = 0;
 	DDRC = 0;
 	DDRD = 0;
-	
+	DDRE = 0;
+	DDRF = 0;
+	DDRG = 0;
+	DDRH = 0;
+	DDRJ = 0;
+	DDRK = 0;
+	DDRL = 0;
+
 	PORTB = 0;
 	PORTC = 0;
 	PORTD = 0;
+	PORTE = 0;
+	PORTF = 0;
+	PORTG = 0;
+	PORTH = 0;
+	PORTJ = 0;
+	PORTK = 0;
+	PORTL = 0;
 }
 /*************************************************************************************************************/
 void AppInit(unsigned int ubrr){
@@ -246,33 +301,32 @@ void AppInit(unsigned int ubrr){
 	//UCSR1B |= (1 << RXCIE1);
 	
 	//Enable LEDs
-	ddrDEBUGleds |= (1 << bnWAVRCOMMled)|(1 << bnWAVRCOMMled)|(1 << bnSTARTINGled)|(1 << bnUSERDATEled)|(1 << bnUSERTIMEled);
-	prtDEBUGleds &= ~((1 << bnWAVRCOMMled)|(1 << bnWAVRCOMMled)|(1 << bnUSERDATEled)|(1 << bnUSERTIMEled));
-	prtDEBUGleds|= (1 << bnSTARTINGled);
-	
-	ddrSTATUSled |= (1 << bnSTATUSled);
-	ddrSTATUSled2 |= (1 << bnSTATUSled2); //blinks at 30 Hz
-	prtSTATUSled2 |= (1 << bnSTATUSled2);
-	prtSTATUSled |= (1 << bnSTATUSled);		//signifies device is ON, goes to WAVR AND BONE
+	ddrDEBUGled = 0xFF;	//all outputs
+	prtDEBUGled = 0x00;	//all low
+	ddrDEBUGled2 |= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
+	prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
 	
 	//Disable power to all peripherals
 	PRR0 |= (1 << PRTWI)|(1 << PRTIM2)|(1 << PRTIM1)|(1 << PRTIM0)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
 	//Set up Pin Change interrupts
-	PCICR = (1 << PCIE0);			//Enable pin chang einterrupt on PA0
-	PCMSK0 |= (1 << PCINT0);			//Enable mask register
-	EIMSK = (1 << INT2);
-	EICRA = (1 << ISC21)|(1 << ISC20);			//falling edge of INT2 enables interrupt
+	EICRA |= (1 << ISC01)|(1 << ISC00)|(1 << ISC11)|(1 << ISC10);			//rising edge of INT0 and INT1 enables interrupt
+	EICRB = (1  << ISC61)|(1 << ISC60)|(1 << ISC71)|(1 << ISC70);			//rising edge of INT7 and INT6 enables interrupt
+	__killCommINT();
+	__killSpeedINT();
+	EIMSK |= (1 << INT7);													//let it know if shutdown is imminent
 	
 	//Initialize flags
 	justStarted=fTrue;
-	flagUARTWAVR=fFalse;
-	flagUARTBone=fFalse;
-	flagGetUserDate=fFalse;
-	flagGetUserTime=fFalse;
-	flagSendTimeToWAVR=fFalse;
-	flagSendDateToWAVR=fFalse;
-
+	flagReceiveWAVR=fFalse;
+	flagReceiveBone=fFalse;
+	flagWaitingForWAVR=fFalse;
+	flagWaitingForBone=fFalse;
+	flagGetUserClock=fFalse;
+	flagSendWAVR=fFalse;
+	flagSendBone=fFalse;
+	flagWAVRtime=fFalse;
+	flagQUIT=fFalse;
 }
 /*************************************************************************************************************/
 void EnableRTCTimer(){
@@ -312,206 +366,4 @@ void Wait_sec(volatile int delay){
 }
 
 /*************************************************************************************************************/
-void SendToWAVR(BOOL sTime, BOOL sDate){
-	volatile int state=0;
-	BOOL done=fFalse, noTimeout=fTrue;
-	char sentString[30];
-	volatile int beginningSecond=currentTime.getSeconds();
-	volatile int endingSecond=(beginningSecond+10)%60;
-	while (!done && noTimeout){
-		switch(state){
-			case 0: {
-				//Send interrupt to WAVR
-			//	if (sTime || sDate){prtOUTPUTTOWAVR |= (1 << bnNUMBER);Wait_ms(1)}
-				if (sTime && sDate){PrintWAVR("SYNTD."); state=1;}
-				else if (sTime && !sDate){PrintWAVR("SYNT.");state=3;}
-				else if (!sTime && sDate){PrintWAVR("SYND.");state=5;}
-				else {done=fTrue; break;}
-				//Done transmitting, go to next state which is waiting for ACKT/D/TD
-			} case 1: {
-				char recChar, recString[7];
-				volatile int strLoc=0;
-				BOOL noCarriage=fTrue;
-				//We send SYNTD to the WAVR, need to receive that without getting a timeout before sending it the date and time.
-				while (noCarriage && noTimeout){
-					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
-					recChar=UDR1;
-					if (recChar=='.'){
-						recString[strLoc]='\0';
-						noCarriage=fFalse; //get out of loop
-						if (!strcmp(recString,"ACKTD")){//Good to send time and date, go to next state and send date and time.
-							state=2;
-							printTimeDate(fFalse,fTrue,fTrue);
-							PutUartChWAVR('.');
-							strcpy(sentString,currentTime.getTime());
-							strcat(sentString,"/");
-							strcat(sentString,currentTime.getDate());
-						} else {state=0; noCarriage=fFalse; PrintWAVR("SYNERROR.");}
-					} //endif carriage
-					else {
-						recString[strLoc++]=recChar;
-						if (strLoc >= 7){strLoc=0; noCarriage=fFalse; state=0; PrintWAVR("SYNERROR.");}
-					} //end normal char else
-				} //end receiving part
-				break;//end case 1
-			} case 2: { //Need to get ACK with the date and time.
-				char recString[30];
-				char recChar;
-				volatile int strLoc=0;
-				BOOL noCarriage=fTrue;
-				//get the ack
-				while (noCarriage && noTimeout){
-					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
-					recChar=UDR1;
-					if (recChar=='.'){
-						recString[strLoc]='\0';
-						noCarriage=fFalse;
-						if (!strcmp(recString,sentString)){done=fTrue;}
-						else {state=0; PrintWAVR("SYNERROR.");}
-					} else {
-						recString[strLoc++]=recChar;
-						if (strLoc > 30){strLoc=0; state=0; noCarriage=fFalse; PrintWAVR("SYNERROR.");}
-					}
-				}
-				break;
-			} case 3: {
-				char recString[7];
-				char recChar;
-				volatile int strLoc=0;
-				BOOL noCarriage=fTrue;
-				//We send SYNT to the WAVR, need to receive that without getting a timeout before sending it the time.
-				while (noCarriage && noTimeout){
-					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
-					recChar=UDR1;
-					if (recChar=='.'){
-						recString[strLoc]='\0';
-						noCarriage=fFalse; //get out of loop
-						if (!strcmp(recString,"ACKT")){//Good to send time and date, go to next state and send date and time.
-							state=4;
-							printTimeDate(fFalse,fTrue,fFalse);
-							strcpy(sentString,currentTime.getTime());
-							strcat(sentString,"/");
-							PutUartChWAVR('.');	//delimiter
-						} else {state=0; noCarriage=fFalse; PrintWAVR("SYNERROR.");}
-					} //endif carriage
-					else {
-						recString[strLoc++]=recChar;
-						if (strLoc >= 7){strLoc=0; noCarriage=fFalse; state=0; PrintWAVR("SYNERROR.");}
-					} //end normal char else
-				} //end receiving part
-				break;//end case 1
-			} case 4: { //Need to get ACK with the time
-				char recString[30];
-				char recChar;
-				volatile int strLoc=0;
-				BOOL noCarriage=fTrue;
-				//get the ack
-				while (noCarriage && noTimeout){
-					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
-					recChar=UDR1;
-					if (recChar=='.'){
-						recString[strLoc]='\0';
-						noCarriage=fFalse;
-						if (!strcmp(recString,sentString)){done=fTrue;}
-						else {state=0; PrintWAVR("SYNERROR.");}
-					} else {
-						recString[strLoc++]=recChar;
-						if (strLoc > 30){strLoc=0; state=0; noCarriage=fFalse; PrintWAVR("SYNERROR.");}
-					}
-				}
-				break;
-			} case 5: {
-				char recString[7];
-				char recChar;
-				volatile int strLoc=0;
-				BOOL noCarriage=fTrue;
-				//We send SYNT to the WAVR, need to receive that without getting a timeout before sending it the date.
-				while (noCarriage && noTimeout){
-					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
-					recChar=UDR1;
-					if (recChar=='.'){
-						recString[strLoc]='\0';
-						noCarriage=fFalse; //get out of loop
-						if (!strcmp(recString,"ACKD")){//Good to send time and date, go to next state and send date and time.
-							state=6;
-							printTimeDate(fFalse,fFalse,fTrue);
-							PutUartChWAVR('.');	//delimiter
-							strcpy(sentString,currentTime.getDate());
-						} else {state=0; noCarriage=fFalse; PrintWAVR("SYNERROR.");}
-					} //endif carriage
-					else {
-						recString[strLoc++]=recChar;
-						if (strLoc >= 7){strLoc=0; noCarriage=fFalse; state=0; PrintWAVR("SYNERROR.");}
-					} //end normal char else
-				} //end receiving part
-				break;//end case 1
-			} case 6: { //Need to get ACK with the date
-				char recString[30];
-				char recChar;
-				volatile int strLoc=0;
-				BOOL noCarriage=fTrue;
-				//get the ack
-				while (noCarriage && noTimeout){
-					while (!(UCSR1A & (1 << RXC1)) && noTimeout);
-					recChar=UDR1;
-					if (recChar=='.'){
-						recString[strLoc]='\0';
-						noCarriage=fFalse;
-						if (!strcmp(recString,sentString)){done=fTrue;}
-						else {state=0; PrintWAVR("SYNERROR.");}
-					} else {
-						recString[strLoc++]=recChar;
-						if (strLoc > 30){strLoc=0; state=0; noCarriage=fFalse; PrintWAVR("SYNERROR.");}
-					}
-				}
-				break;
-			} default: {state=0; break;}		
-		} //end switch
-		if (beginningSecond != endingSecond){noTimeout=fTrue;}
-		else {noTimeout=fFalse;}//Timeout occurred, get out of loop and don't set flag that it was successful
-	}//end done loop
-	if (noTimeout && sTime && !sDate){flagSendTimeToWAVR=fFalse;}
-	else if (noTimeout && !sTime && sDate){flagSendDateToWAVR=fFalse;}
-	else if (noTimeout && sTime && sDate){flagSendDateToWAVR=fFalse; flagSendTimeToWAVR=fFalse;}
-	else {/*do nothing, leave flags as they are. Implement a wait time before we try and update again*/}
-} //end function
-
-
-/*************************************************************************************************************/
-void ReceiveBone(){
-	//Do something with reception here
-	volatile static int numberOfErrors=0; //we have three chances to transmit the time correctly, then we ahve user enter data.
-	char recString[10];
-	char recChar;
-	int strLoc=0;
-	BOOL noCarriage=fTrue;
-	//Get character from UDR0
-	recChar=UDR0;
-	if (recChar=='.'){
-		PrintBone("R");	//signal resend
-		noCarriage=fFalse;
-	} else {
-		recString[strLoc++]=recChar;
-	}
-	while (noCarriage && flagUARTBone){
-		//Get next character
-		while (!(UCSR0A & (1 << RXC0)) && flagUARTBone);
-		recChar=UDR0;
-		if (recChar=='.'){
-			recString[strLoc]='\0';			//Null Terminate
-			noCarriage=fFalse;				//gets out of while loop
-			if (!strcmp(recString,"time")){printTimeDate(fTrue,fTrue,fFalse);}
-			else if (!strcmp(recString,"date")){printTimeDate(fTrue,fFalse,fTrue);}
-			else if (!strcmp(recString,"both")){printTimeDate(fTrue,fTrue,fTrue);}
-			else {PrintBone("ACK"); PrintBone(recString);}
-			numberOfErrors=0;
-		} else if (numberOfErrors > 3){PrintBone("ACKERROR"); flagUARTBone=fFalse; numberOfErrors=0;}
-		else {
-			recString[strLoc] = recChar;
-			strLoc++;
-			if (strLoc >= 10){strLoc = 0; numberOfErrors++; flagUARTBone=fFalse; PrintBone("ACKR");}
-		}
-	}			
-	char throwAwaychar=UDR0;	//make sure it's clear.
-}
 /*************************************************************************************************************/

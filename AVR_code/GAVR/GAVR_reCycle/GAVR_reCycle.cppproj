@@ -5,7 +5,7 @@
     <ProjectVersion>6.0</ProjectVersion>
     <ToolchainName>com.Atmel.AVRGCC8</ToolchainName>
     <ProjectGuid>{f296b74d-7476-4a53-ade3-81f98d2c752e}</ProjectGuid>
-    <avrdevice>ATmega644PA</avrdevice>
+    <avrdevice>ATmega2560</avrdevice>
     <avrdeviceseries>none</avrdeviceseries>
     <OutputType>Executable</OutputType>
     <Language>CPP</Language>
@@ -20,7 +20,8 @@
     <OverrideVtor>false</OverrideVtor>
     <OverrideVtorValue />
     <eraseonlaunchrule>0</eraseonlaunchrule>
-    <AsfVersion>2.9.0</AsfVersion>
+    <AsfVersion>2.11.1</AsfVersion>
+    <avrtool />
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
     <ToolchainSettings>
@@ -78,7 +79,7 @@
     </ToolchainSettings>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="ATmegaXX4PA.h">
+    <Compile Include="ATmega2560.h">
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="eepromSaveRead.h">
