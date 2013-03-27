@@ -179,7 +179,7 @@ ISR(INT2_vect){	//about to get time, get things ready
 //RTC Timer.
 ISR(TIMER2_OVF_vect){
 	volatile static int timeOut = 0;
-	volatile static int gavrSendTimeout=0, boneReceiveTimeout=0;
+	volatile static int gavrSendTimeout=0, boneReceiveTimeout=0, gavrReceiveTimeout=0;
 	
 	currentTime.addSeconds(1);
 	
@@ -195,19 +195,11 @@ ISR(TIMER2_OVF_vect){
 	else if (!flagReceivingBone && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
 	else;
 	
-	//*********This is outdated*********
-	if ((flagReceivingBone == fTrue || flagGoToSleep == fFalse) && !flagNewShutdown && !restart){ //if waiting for a character in Receive0() or in main program without sleep
-		timeOut++;
-		if (timeOut >= 6){
-			__enableCommINT();
-			flagReceivingBone = fFalse;
-			flagGoToSleep = fTrue;
-			flagNormalMode=fTrue;
-			timeOut = 0;
-		}
-	} else if (timeOut > 0){
-		timeOut = 0;
-	} else;
+	//GAVR Reception Timeout
+	if (flagReceivingGAVR && gavrReceiveTimeout <= COMM_TIMEOUT_SEC){gavrReceiveTimeout++;}
+	else if (flagReceivingGAVR && gavrReceiveTimeout > COMM_TIMEOUT_SEC){flagReceivingGAVR=fFalse; boneReceiveTimeout=0; __enableCommINT();}
+	else if (!flagReceivingGAVR && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
+	else;
 
 }
 
@@ -239,7 +231,11 @@ int main(void)
 	GetTemp();
 	//flagGoodTemp=fTrue;
 	TakeADC();
-	if (flagGoodVolts && flagGoodTemp){PowerUp(POWER_UP_INTERVAL);flagFreshStart=fTrue;}
+	if (flagGoodVolts && flagGoodTemp){
+		PowerUp(POWER_UP_INTERVAL);
+		__enableCommINT();
+		flagFreshStart=fTrue;
+	}
 	else {flagNormalMode=fTrue;flagFreshStart=fFalse;}
 		
 	//main programming loop
@@ -249,19 +245,24 @@ int main(void)
 		if (flagReceivingBone){
 			ReceiveBone();
 			__enableCommINT();
-			flagGoToSleep=fTrue;
-			flagNormalMode=fTrue;
+			if (!flagReceivingGAVR){		//Just in case there was an interrupt IMMEDIATELY after the enabling of Communication interrupts
+				flagGoToSleep=fTrue;
+				flagNormalMode=fTrue;
+			}			
 		}
-		/*
+		
+		//Receiving Data/Signals from GAVR
 		if (flagReceivingGAVR){
 			ReceiveGAVR();
 			__enableCommINT();
-			flagGoToSleep=fTrue;
-			flagNormalMode=fTrue;
+			if (!flagReceivingBone){		//Just in case there was an interrupt IMMEDIATELY after the enabling of Communication interrupts
+				flagGoToSleep=fTrue;
+				flagNormalMode=fTrue;
+			}			
 		}
-		*/
+		
 	
-		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The interal send machine deals with the flags.
+		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The internal send machine deals with the flags.
 		if (flagUpdateGAVRTime || flagUpdateGAVRDate || flagUserDate || flagUserTime){
 			__killCommINT();
 			sendGAVR();
@@ -557,7 +558,7 @@ void GetTemp(){
 	prtTEMPen |= (1 << bnTEMPen);
 	PRR0 &= ~(1 << PRSPI);	
 	SPCR |= (1 << MSTR)|(1 << SPE)|(1 << SPR0);			//enables SPI, master, fck/64
-	Wait_sec(1);
+	Wait_sec(500);
 	//Slave select goes low, sck goes low,  to signal start of transmission
 	prtSpi0 &= ~((1 << bnSck0)|(1 << bnSS0));
 	

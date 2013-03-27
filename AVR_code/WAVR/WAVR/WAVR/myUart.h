@@ -134,7 +134,7 @@ void sendGAVR(){
 				//send string case.
 				else if (updatingGAVR && !strcmp(recString,sentString)){state=5;}		//they match, successful send.
 				else if (updatingGAVR && strcmp(recString,sentString) && strcmp(recString,"ACKBAD.")){state=7;}	//string isnt the same as ACKBAD or what we sent.
-				else{state=7;} //invalid ack
+				else{state=7;} //invalid ack. ACKERROR goes here.
 				break;
 				}//end case 2
 			case 3:{
@@ -244,7 +244,7 @@ void ReceiveBone(){
 					}//end case 0
 				case 1:{
 					while (noCarriage && flagReceivingBone){	//while there isn't a timeout and no carry
-						while (!(UCSR1A & (1 << RXC0)) && flagReceivingBone);		//get the next character
+						while (!(UCSR0A & (1 << RXC0)) && flagReceivingBone);		//get the next character
 						if (!flagReceivingBone){state=0; break;}					//if there was a timeout, break out and reset state
 						recChar=UDR0;
 						recString[strLoc++]=recChar;
@@ -339,7 +339,7 @@ void ReceiveGAVR(){
 			switch(state){
 				case 0:{
 					strLoc=0;
-					recChar = UDR0;
+					recChar = UDR1;
 					if (recChar=='.'){
 						state=6;															//Go to error state.
 					} else  {recString[strLoc++]=recChar; state=1;}							//Add to string, go to state 2
@@ -347,9 +347,9 @@ void ReceiveGAVR(){
 				}//end case 0
 				case 1:{
 					while (noCarriage && flagReceivingBone){	//while there isn't a timeout and no carry
-						while (!(UCSR1A & (1 << RXC0)) && flagReceivingBone);				//get the next character
+						while (!(UCSR1A & (1 << RXC1)) && flagReceivingBone);				//get the next character
 						if (!flagReceivingBone){state=0; break;}							//if there was a timeout, break out and reset state
-						recChar=UDR0;
+						recChar=UDR1;
 						recString[strLoc++]=recChar;										//'.' always included into recString
 						if (recChar == '.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
 						else if(strLoc >= 19){state=6;noCarriage=fFalse;}
@@ -426,6 +426,7 @@ void ReceiveGAVR(){
 				case 6:{
 					PrintGAVR("ACKERROR.");
 					state=5;
+					break;
 				}//end case 6
 				default: {state=0; strLoc=0; flagReceivingGAVR=fFalse; break;}				
 			}//end switch	
