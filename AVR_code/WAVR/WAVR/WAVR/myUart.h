@@ -17,6 +17,9 @@
 |				  user date and time if it was asked for. 
 |			3/26: Started work on receive protocol from GAVR. (2) Preliminary finish of 
 |				  ReceiveGAVR. Need to add timeout to main program TIMER2 overflow.
+|				  (3)Finished ReceiveGAVR(). Should be good to go. Just need to test. Added new flag
+|				   flagWaitingForReceiveGAVR whcih is triggered after the WAVR asks for the userDate
+|				   or userTime.
 |================================================================================
 | *NOTES: This is the UART for the WAVR.
 \*******************************************************************************/
@@ -35,7 +38,7 @@ void printTimeDate(BOOL WAVRorBone=fFalse, BOOL pTime=fTrue,BOOL pDate=fTrue);
 
 //Declare external flags and clock.
 extern BOOL flagSendingGAVR, flagUserDate, flagUserTime, flagUpdateGAVRTime, flagUpdateGAVRDate, flagInvalidDateTime, flagWaitingToSendGAVR, flagNoGPSTime;
-extern BOOL flagReceivingBone, flagFreshStart, restart, flagReceivingGAVR;
+extern BOOL flagReceivingBone, flagFreshStart, restart, flagReceivingGAVR,flagWaitingForReceiveGAVR;
 extern WORD globalADC, globalTemp;
 extern myTime currentTime;
 
@@ -69,7 +72,6 @@ void PrintGAVR(char string[]){
 	}
 }
 /*************************************************************************************************************/
-
 void sendGAVR(){
 	//Declare variables to be used.
 	volatile static unsigned int state=0;
@@ -140,10 +142,13 @@ void sendGAVR(){
 			case 3:{
 				if (flagUserDate&&!flagUserTime){
 					PrintGAVR("SYNGD.");
+					flagWaitingForReceiveGAVR=fTrue;
 				} else if (!flagUserDate&&flagUserTime){
 					PrintGAVR("SYNGT.");
+					flagWaitingForReceiveGAVR=fTrue;
 				} else if (flagUserTime&&flagUserDate){
 					PrintGAVR("SYNGB.");
+					flagWaitingForReceiveGAVR=fTrue;
 				} else;
 				
 				//If we are updating the gavr, send the time and date together regardless. preface with SYN
@@ -334,10 +339,12 @@ void ReceiveGAVR(){
 			/**			 go to exit state, otherwise send "ACKNO" and go to exit state 5.												   **/
 			/** State 5: Exit case. Lower "flagReceivingGAVR" which causes and exit.													   **/
 			/** State 6: ACKERROR state. Send "ACKERROR", then exit through state 5.													   **/
+			/** State 7: Successful acquire of time/date.
 			/** Default: Set state to 0, doesn't really matter though. Exit signalling timeout to sender.								   **/
 			/********************************************************************************************************************************/			
 			switch(state){
 				case 0:{
+					//Beginning case
 					strLoc=0;
 					recChar = UDR1;
 					if (recChar=='.'){
@@ -346,6 +353,7 @@ void ReceiveGAVR(){
 					break;
 				}//end case 0
 				case 1:{
+					//Assemble string case
 					while (noCarriage && flagReceivingBone){	//while there isn't a timeout and no carry
 						while (!(UCSR1A & (1 << RXC1)) && flagReceivingBone);				//get the next character
 						if (!flagReceivingBone){state=0; break;}							//if there was a timeout, break out and reset state
@@ -358,55 +366,119 @@ void ReceiveGAVR(){
 					break;
 				}//end case 1
 				case 2:{
+					//Got string, see what it is case.
 					if (!strncmp(recString,"SYNNEED.",8)){state=4;} //set appropriate flags and respond in appropriate way.
 					else if ((recString[4]==':') != (recString[5]==':')){state=3;}//go parse the string for a time and date. SYN03:33:12/DATE or SYN3:33:12/DATE, either char 4 or 5 is :
 					else {state=6;}
 					break;
 				}//end case 2
 				case 3:{
-			/*----*/if (flagUserDate || flagUserTime){
-					int tempNum[3]={0,0,0}, tempNum1[3]={0,0,0}, hms=0, dmy=0,placement=0;
-					//Look at string for all locations up to \0, \0 is needed to know when last digits are done
-					char tempStringNum[3];
-					
-					//Go through the string.
-					for (int i=0; i<= strLoc; i++){
-						//temporary string that holds a number, new one for each
-						//If the character isn't a colon, we haven't gotten 3 int values, and character isn't eof, add to tempStringNum
-						if (recString[i]!=':' && hms<3 && recString[i]!='\0'){
-							tempStringNum[placement++]=recString[i];
-						//If haven't gotten 3 int's and character is colon, store int(stringNum) into tempNum[<current time param>]
-						} else if (hms<2 && recString[i] == ':') {
-							tempNum[hms++] = atoi(tempStringNum);
-							for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}	//reset the string
-							placement=0;												//reset placement
-						//If we haven't found 3 int values and current Location is at end, and end char is null, save as second
-						} else if (hms<3 && (recString[i]=='\0' || i==strLoc)){
+					//Parse for date/time case
+					if (flagUserDate || flagUserTime){
+						//Go through the string and parse for the time. Must go through the time to get the date.
+						BOOL successTime=fFalse, successDate=fFalse;			//whether or not we have successfully parsed string
+						int counter=0;
+						int tempNum[3]={0,0,0}, tempNum1[3]={0,0,0},dmy=0, hms=0, placement=0;
+						char tempStringNum[5];
+						
+						//Parse the string for the time. Always looks for the time. If not end of string or '/' indicating start of date, continue
+						while (recString[counter] != '/' && recString[counter] != '\0'){
+							//If the character isn't a colon, we haven't gotten 3 int values add to tempStringNum
+							if (recString[counter]!=':' && hms<3){
+								tempStringNum[placement++]=recString[counter];
+							//If haven't gotten 3 int's and character is colon, store int(stringNum) into tempNum[<current time param>]
+							} else if (hms<2 && recString[counter] == ':') {
+								tempNum[hms++] = atoi(tempStringNum);
+								for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}	//reset the string
+								placement=0;												//reset placement
+							//If nothing else, somethign is wrong but it won't matter because we'll eventually hit \0 and exit with ACKBAD
+							} else;
+							counter++;
+						}//end while
+						//Found a '/', assign tempNum otherwise exit with ACKBAD
+						if (recString[counter] == '/'){
 							tempNum[hms] = atoi(tempStringNum);
-							hms++;	//goes to three, nothing should happen.
-						}//end else if
-						else;	/**********************************************THIS IS WHERE DATE PARSING SHOULD HAPPEN*****************************************/
-					}//end for
-										
-					//Try setting the time and date
-					BOOL successTime=fFalse, successDate=fFalse;
-					if (tempNum[0]/24==0 && tempNum[1]/60==0 && tempNum[2]/60==0){successTime=fTrue;}
-					if (tempNum1[0]/13==0 && tempNum1[1]/32==0 && tempNum1[2]/1000 >= 2){successDate=fTrue;}					
-					if (successTime && successDate){
-						currentTime.setTime(tempNum[0],tempNum[1],tempNum[2]);
-						currentTime.setDate(tempNum1[0],tempNum1[1],tempNum1[2]);
-						saveDateTime_eeprom(fTrue,fTrue);
-						PrintGAVR(recString);				//has '.' termination
-						flagNoGPSTime=fTrue;
-					} else {
-						PrintGAVR("ACKBAD.");				//Say there was an error
-					}
-					}//end if flagUserDate||flagUserTime					
+							successTime=fTrue;
+						} else {
+							state=5;
+							PrintGAVR("ACKBAD.");
+						}
+						
+						//If flag for Date is set, then parse the string and do something with it.
+						if (flagUserDate){
+							//Now get the date. have to null the tempStringNum
+							for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}	//reset the string
+							placement=0;
+							counter++;	//get past the '/'
+							
+							//Loop through the string. If not end of file and counter isn't end of string, and not terminator '.', continue
+							while (recString[counter] != '.' && recString[counter] != '\0' && counter != strLoc){
+								//If char isn't sepaerator or end of string of dmy has been hit, add to buffer
+								if  (recString[counter] != ',' && dmy < 3){
+									tempStringNum[placement++]=recString[counter];
+								//If a comma was found, need to store that sucker in the tempNum1[x]. dmy needs to be 0 or 1 aka month or day.
+								} else if (dmy<2 && recString[counter]==','){
+									tempNum1[dmy++] = atoi(tempStringNum);
+									for (int j=0; j <= placement; j++){tempStringNum[j]=NULL;}
+									placement=0;
+								} else;
+								counter++;							
+							}//end while
+							//Assign last date if the reason we broke the while loop was a '.'. If not, ACKBAD and exit.
+							if (recString[counter] == '.'){
+								tempNum1[dmy] = atoi(tempStringNum);
+								successDate=fTrue;
+							} else {//something in the string was wrong, ACKBAD and then exit
+								PrintGAVR("ACKBAD.");
+								state=5;
+							}
+						}//end if flagUserDate						
+	
+						//Make sure the settings are okay before setting the time. If not, send ACKBAD and exit.
+						if (tempNum[0]/24==0 && tempNum[1]/60==0 && tempNum[2]/60==0 && flagUserTime && successTime){
+							currentTime.setTime(tempNum[0],tempNum[1],tempNum[2]);
+							flagNoGPSTime=fTrue;
+						} else {
+							PrintGAVR("ACKBAD.");
+							state=5;
+						}//end if-else time
+						
+						//Make sure the date is correct before setting it. If not, send ACKBAD. and exit.
+						if (tempNum1[0]/13==0 && tempNum1[1]/32==0 && tempNum1[2]/2000>=1 && flagUserDate && successDate){
+							currentTime.setDate(tempNum1[0],tempNum1[1], tempNum1[2]);
+						} else {
+							PrintGAVR("ACKBAD.");
+							state=5;
+							break;
+						}//end if-else date
+						
+						//If we wanted date and got it correctly, or wanted time and got it correctly, go to state 7 to ack with the appropriate response
+						if ((flagUserDate && successDate) && (flagUserTime && successTime)){
+							flagUserDate=fFalse;
+							flagUserTime=fFalse;
+							flagWaitingForReceiveGAVR=fFalse;
+							state=7;
+						} else if (flagUserDate && successDate && !flagUserTime){
+							flagUserDate=fFalse;
+							flagWaitingForReceiveGAVR=fFalse;
+							state=7;
+						} else if (flagUserTime && successTime && !flagUserDate){
+							flagUserTime=fFalse;
+							flagWaitingForReceiveGAVR=fFalse;
+							state=7;
+						} else {
+							PrintGAVR("ACKBAD.");
+							state=5;
+						}																										
+					} else {	//don't need the date, wasn't looking for it. Respond with ACKNO. Should reset all flags on GAVR side.
+						PrintGAVR("ACKNO.");
+						state=5;
+					}// end if-else (flagUserDate || flagUserTime)					
 					//Exit
-					state=5;
 					break;
 					}//end case 3				
 				case 4:{
+					//Successful SYNNEED case.
 					if (!flagUserDate && !flagUserTime){	//If we don't need the date or time, update with what we have.
 						flagUpdateGAVRDate=fTrue;
 						flagUpdateGAVRTime=fTrue;
@@ -419,15 +491,26 @@ void ReceiveGAVR(){
 					break;					
 				}//end case 4
 				case 5:{
+					//Exit case
 					flagReceivingGAVR=fFalse;
 					state=0;		//just in case
 					break;
 				}//end case 5
 				case 6:{
+					//Error in ACK case
 					PrintGAVR("ACKERROR.");
 					state=5;
 					break;
 				}//end case 6
+				case 7:{
+					//Successful grab of date/time case
+					recString[0]='A';
+					recString[1]='C';
+					recString[2]='K';
+					PrintGAVR(recString);
+					state=5;
+					break;		
+				}//end case 7
 				default: {state=0; strLoc=0; flagReceivingGAVR=fFalse; break;}				
 			}//end switch	
 		}//end while flagReceivingGAVR	

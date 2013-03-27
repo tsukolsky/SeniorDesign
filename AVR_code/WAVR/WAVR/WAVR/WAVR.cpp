@@ -38,8 +38,13 @@
 |				 interrupt enables and kills to "__*CommINT()". (2) Tweaked for SPI/644PA, 
 |				 slightly differnet SPI register? Might just be the switch from the ATmega328??
 |				 See "myUart.h"->ReceiveGAVR(). Need to add overflow case for timer2/ReceiveGAVR
+|				 (3)Instituted timeout for RecieveGAVR, added flag "flagWaitingForReceiveGAVR"
+|				 which is used to konw when to actually send a "I need something" to the GAVR->
+|				 differentiates the sending case and receiving case.
 |================================================================================
-| *NOTES:
+| *NOTES: (1)3/26- Currently, if the WAVR is going to update the time, but not the date, on the GAVR it has to 
+|			  receive the date first. THis is a problem. If statement needs to be changed and also the SendGAVR()
+|			  protocol needs to include the "flagWaitingForReceiveGAVR" in protocol.
 \*******************************************************************************/
 
 using namespace std;
@@ -119,11 +124,13 @@ myTime currentTime;  //The clock, MUST BE GLOBAL. In final program, will initiat
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
 /*==============================================================================================================*/
-BOOL flagGoToSleep, flagReceivingBone,flagNormalMode,flagReceivingGAVR;
+BOOL flagGoToSleep, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaitingForReceiveGAVR;
 /* flagGoToSleep: go to sleep on end of while(fTrue) loop														*/
 /* flagUARTbone: receiving info from the bone																	*/
 /* flagNormalMode: normal mode of operation, take ADC and temp readings											*/
-/* flagReceivingWAVR: receiving info from the GAVR
+/* flagReceivingWAVR: receiving info from the GAVR																*/
+/* flagWaitingForReceiveGAVR: waiting to get the date/time from the GAVR, flagUserDate/flagUserTime is set...	*/
+/*								--this flag is set once the SendGAVR() is complete with a need to get date/time */
 /*==============================================================================================================*/
 
 
@@ -213,7 +220,7 @@ ISR(USART0_RX_vect){
 ISR(USART1_RX_vect){
 	UCSR1B &= ~(1 <<RXCIE1);	//disable interrupt
 	__killCommINT();
-	//flagReceivingGAVR=fTrue;
+	flagReceivingGAVR=fTrue;
 }
 
 /*--------------------------END-Interrupt Service Routines--------------------------------------------------------------------------------*/
@@ -263,7 +270,7 @@ int main(void)
 		
 	
 		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The internal send machine deals with the flags.
-		if (flagUpdateGAVRTime || flagUpdateGAVRDate || flagUserDate || flagUserTime){
+		if (flagUpdateGAVRTime || flagUpdateGAVRDate || flagUserDate || flagUserTime && !flagWaitingForReceiveGAVR){
 			__killCommINT();
 			sendGAVR();
 			__enableCommINT();
@@ -626,8 +633,4 @@ void PowerDown(){
 	sei();
 }
 /*************************************************************************************************************/
-
-
-
-
 /*--------------------------END-Public Funtions--------------------------------------------------------------------------------*/
