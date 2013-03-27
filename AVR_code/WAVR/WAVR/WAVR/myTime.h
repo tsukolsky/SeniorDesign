@@ -163,7 +163,6 @@ const char * myTime::getTime(){
 	strcat(timeString,minuteString);
 	strcat(timeString,":");
 	strcat(timeString,secondString);
-	timeString[10] = ' ';
 	timeString[11] = '\0';
 	return timeString;
 }

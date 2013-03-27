@@ -2,14 +2,15 @@
 | WAVR.cpp
 | Author: Todd Sukolsky
 | Initial Build: 1/28/2013
-| Last Revised: 3/26/13
+| Last Revised: 3/27/13
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main.cpp file for the RTC to be implemented on the 
 |				Re.Cycle final cape that plugs into the beaglebone. It needs to 
 |				keep accurate time and date for other modules to take and use.
 |				It will be pinged over UART for Time and/or date, and will then
-|				respond. Time will be initiated by GPS NMEA string.
+|				respond. Time will be initiated by GPS NMEA string. See "Revisions"
+|				for changes
 |--------------------------------------------------------------------------------
 | Revisions:1/28- Initial build, bare boned
 |			1/29- Added time and date class, main program built
@@ -43,11 +44,20 @@
 |				 differentiates the sending case and receiving case.
 |		   3/27- (1)Changed flagUserDate and flagUserTime to flagUserClock. Replaced flagUpdateGAVR*
 |				 with flagUpdateGAVRClock. See "myUart.h". Need to go over start procedure and 
-|				 make it solid for GAVR receive and send to work correctly.
+|				 make it solid for GAVR receive and send to work correctly.(2)FInished start procedure,
+|				 has timeout and flags are set when 1. GPS sends string, 2. Timeout occurs, 3. restart 
+|				 (will send what we had in EEPROM before GPS comes in if it's delayed)
 |================================================================================
-| *NOTES: (1)3/26- Currently, if the WAVR is going to update the time, but not the date, on the GAVR it has to 
+| Revisions Needed: 
+|		(1)	  3/26- Currently, if the WAVR is going to update the time, but not the date, on the GAVR it has to 
 |			  receive the date first. THis is a problem. If statement needs to be changed and also the SendGAVR()
 |			  protocol needs to include the "flagWaitingForReceiveGAVR" in protocol.
+|			  --ISSUE RESOLVED: Now if the WAVR needs the date, it needs the time as well since GPS sends 
+|				date and time. Without valid GPS, rely on EEPROM (if restart) or else GAVR/USER. If GPS
+|				is sending valid data, user can't change date or time, they are "ignorant".
+|
+|================================================================================
+| Notes:
 \*******************************************************************************/
 
 using namespace std;
@@ -79,6 +89,7 @@ using namespace std;
 
 //Declare timeout value
 #define COMM_TIMEOUT_SEC	3
+#define STARTUP_TIMEOUT_SEC	40
 
 //Sleep and Run Timing constants
 #define SLEEP_TICKS_HIGHV	10				//sleeps for 20 seconds when battery is good to go
@@ -138,12 +149,13 @@ BOOL flagGoToSleep, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaiti
 
 
 /*==============================================================================================================*/
-BOOL flagUpdateGAVRClock, flagSendingGAVR, flagUserClock, flagInvalidDateTime, flagWaitingToSendGAVR, flagNoGPSTime;
+BOOL flagUpdateGAVRClock, flagSendingGAVR, flagUserClock, flagInvalidDateTime, flagWaitingToSendGAVR, flagGPSTime;
 /* flagUpdateGAVRClock: Update the GAVR with time and date.														*/
 /* flagSendingGAVR: currently sending info to GAVR																*/
 /* flagUserDate: WAVR doesn't have a good lock on date and/or time, signifies GAVR providing it.				*/
 /* flagInvalidDateTime: the time/date we have currently is wrong/invalid										*/
 /* flagWaitingToSendGAVR: Unsuccessful transmission first time, let other things know we are waiting.			*/
+/* flagGPSTime: If we are getting valid data from GPS, don't accept time or date from GAVR.						*/
 /*==============================================================================================================*/
 
 /*==============================================================================================================*/
@@ -186,8 +198,7 @@ ISR(INT2_vect){	//about to get time, get things ready
 
 //RTC Timer.
 ISR(TIMER2_OVF_vect){
-	volatile static int timeOut = 0;
-	volatile static int gavrSendTimeout=0, boneReceiveTimeout=0, gavrReceiveTimeout=0;
+	volatile static int gavrSendTimeout=0, boneReceiveTimeout=0, gavrReceiveTimeout=0, startupTimeout=0;
 	
 	currentTime.addSeconds(1);
 	
@@ -209,7 +220,16 @@ ISR(TIMER2_OVF_vect){
 	else if (!flagReceivingGAVR && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
 	else;
 
-}
+	//Startup Tiemout for sending clock to GAVR
+	if ((flagFreshStart || restart) && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
+	else if ((flagFreshStart || restart) && startupTimeout > STARTUP_TIMEOUT_SEC){
+		if (flagFreshStart){flagFreshStart=fFalse; flagUserClock=fTrue; flagUpdateGAVRClock=fFalse;}	//The GPS didn't send valid data, get user clock.
+		else if (restart){restart=fFalse; flagUserClock=fFalse; flagUpdateGAVRClock=fTrue;}				//Gps didn't send valid data, we have valid data. This is redundant to the main
+		__enableCommINT();																				//--procedure that depends on "if (restart)"
+		startupTimeout=0;
+	} else if (!(flagFreshStart || restart) && startupTimeout > 0){startupTimeout=0;}
+	else;
+}//End timer 2 overflow.
 
 //UART Receive from BeagleBone
 ISR(USART0_RX_vect){
@@ -239,12 +259,17 @@ int main(void)
 	GetTemp();
 	//flagGoodTemp=fTrue;
 	TakeADC();
-	if (flagGoodVolts && flagGoodTemp){
-		PowerUp(POWER_UP_INTERVAL);
+	if (flagGoodVolts && flagGoodTemp){				//Good to power on system
 		__enableCommINT();
+		PowerUp(POWER_UP_INTERVAL);
 		flagFreshStart=fTrue;
+		flagShutdown=fFalse;
+	} else {										//Something isn't right, don't power on the system.
+		__killCommINT();
+		flagNormalMode=fTrue;
+		flagShutdown=fTrue;
+		flagFreshStart=fFalse;
 	}
-	else {flagNormalMode=fTrue;flagFreshStart=fFalse;}
 		
 	//main programming loop
 	while(fTrue)
@@ -257,7 +282,7 @@ int main(void)
 				flagGoToSleep=fTrue;
 				flagNormalMode=fTrue;
 			}			
-		}
+		}//end flag Receiving from Bone 
 		
 		//Receiving Data/Signals from GAVR
 		if (flagReceivingGAVR){
@@ -267,7 +292,7 @@ int main(void)
 				flagGoToSleep=fTrue;
 				flagNormalMode=fTrue;
 			}			
-		}
+		}//end flag Receiving from GAVR case
 		
 	
 		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The internal send machine deals with the flags.
@@ -275,7 +300,7 @@ int main(void)
 			__killCommINT();
 			sendGAVR();
 			__enableCommINT();
-		}
+		}//end send to GAVR case
 
 		//When to save to EEPROM. Saves time on lower half of the hour, saves data and time on lower half-hour of midday.
 		if (flagNormalMode){
@@ -286,7 +311,7 @@ int main(void)
 					saveDateTime_eeprom(fTrue,fFalse);
 				}	
 			}						
-		}
+		}//end time capture/save
 		
 		//Take ADC reading to check battery level, temp to check board temperature.
 		if (flagNormalMode){
@@ -303,7 +328,7 @@ int main(void)
 				}
 				flagShutdown = fTrue;
 			}
-		}			
+		}//end normal mode Check Analog Signals			
 		
 		//About to shutdown, save EEPROM
 		if (flagNewShutdown){
@@ -311,26 +336,24 @@ int main(void)
 			__killCommINT();
 			flagGoToSleep = fTrue;
 			flagReceivingBone = fFalse;
-			flagNoGPSTime=fFalse;
+			flagUserClock=fFalse;						//reset this so next boot is correct. Done in restart case as well for redundancy
 			saveDateTime_eeprom(fTrue,fTrue);
 			
 			//Kill power--Alert comes in that function
 			PowerDown();
 			flagNewShutdown = fFalse;
-		}
+		}//end new shutdown
 		
 		//If Restart, broadcast date and time to BeagleBone and other AVR
 		if (restart){
-			__enableCommINT();	//enable BONE interrupt. Will come out with newest time. Give it 10 seconds to kill
+			//Enable COmmunication protocols and then power up. Power up specifies the timing for it to happen
+			__enableCommINT();	
 			PowerUp(POWER_UP_INTERVAL);
-			//Check to see if pins are ready. Use timeout of 10 seconds for pins to come high.
-			int waitTime = 0;
-			while (waitTime < 3 && restart){waitTime++; Wait_sec(1);}
+			
+			//Update the GAVRClock since it's a restart, we have the correct date and time. If BeagleBone sends GPS data, use that to back it up.
 			flagUpdateGAVRClock=fTrue;
-			flagNoGPSTime=fFalse;
-			//If we get to here, the flag is not reset or there was a timeout. If timout, goes to sleep and on the next cycle it's awake it will try and 
-			//get an updated date and time from the BeagleBone. Always update GAVR.			
-		}		
+			flagUserClock=fFalse;		
+		}//end restart		
 		
 		//If it's time to go to sleep, go to sleep. INT0 or TIM2_overflow will wake it up.
 		if (flagGoToSleep){GoToSleep(flagShutdown);}
@@ -339,9 +362,10 @@ int main(void)
 		if (flagInvalidDateTime && !flagShutdown){
 			flagInvalidDateTime=fFalse;
 			flagUserClock=fTrue;
-		}		
+			flagUpdateGAVRClock=fFalse;
+		}//end invalid dateTIme		
 					
-	}
+	}//end while forever
 	
 	return 0;
 }
@@ -429,19 +453,19 @@ void AppInit(unsigned int ubrr){
 	flagReceivingBone = fFalse;
 	flagNormalMode=fTrue;
 
-	flagUpdateGAVRClock=fFalse;	//this might need to be high
+	flagUpdateGAVRClock=fFalse;	
 	flagSendingGAVR=fFalse;
 	flagUserClock=fFalse;
 	flagInvalidDateTime=fFalse;
 	flagWaitingToSendGAVR=fFalse;
-	flagNoGPSTime=fFalse;
+	flagGPSTime=fFalse;
 	
 	restart=fFalse;
-	flagNewShutdown=fFalse;
-	flagShutdown  = fFalse;
+	flagNewShutdown=fFalse;	
+	//flagShutdown=fFalse;		//Initialized in startup procedure in beginning of "main"
 	flagGoodVolts=fFalse;
 	flagGoodTemp=fFalse;
-	flagFreshStart=fTrue;
+	//flagFreshStart=fTrue;		//Initialized in startup procedure in beginning of "main"
 }
 /*************************************************************************************************************/
 void EnableRTCTimer(){

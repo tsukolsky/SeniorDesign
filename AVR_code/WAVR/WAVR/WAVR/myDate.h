@@ -174,7 +174,6 @@ const char * myDate::getDate(){
 	strcat(dateString,dayString);
 	strcat(dateString,",");
 	strcat(dateString,yearString);
-	dateString[15] = ' ';
 	dateString[16] = '\0';
 	
 	return dateString;
