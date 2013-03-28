@@ -122,7 +122,7 @@ void sendGAVR(){
 					if (!flagSendingGAVR){state=0; flagTimeout=fTrue; break;}		//if timeout is why we broke, just exit
 					recChar=UDR1;
 					recString[strLoc++]=recChar;
-					if (recChar=='.'){recString[strLoc++]='\0'; state=2;}
+					if (recChar=='.'){recString[strLoc++]='\0'; state=2; noCarriage=fFalse;}
 					else if (strLoc >= 39){strLoc = 0; noCarriage=fFalse; state=7;}
 					else;
 				}//end while
@@ -144,7 +144,7 @@ void sendGAVR(){
 					flagWaitingForReceiveGAVR=fTrue;				
 				//If we are updating the gavr, send the time and date together regardless. preface with SYN
 				} else if (flagUpdateGAVRClock && !flagUserClock){
-					strcpy(sentString,"SYN");			//this is a syn, not ack to save logic in GAVR code. Can change if we want.
+					strcpy(sentString,"ACK");			//this is a syn, not ack to save logic in GAVR code. Can change if we want.
 					strcat(sentString,currentTime.getTime());
 					strcat(sentString,"/");	//add delimiter.
 					strcat(sentString,currentTime.getDate());

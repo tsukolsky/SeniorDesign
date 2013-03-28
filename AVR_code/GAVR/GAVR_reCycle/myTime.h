@@ -2,7 +2,7 @@
 | myTime.h
 | Author: Todd Sukolsky
 | Initial Build: 1/29/2013
-| Last Revised: 1/30/2013
+| Last Revised: 3/4/2013
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the Time class that will keep the realTimeClock. it is in 24
@@ -15,6 +15,7 @@
 |					  --Need to put saveEEPROm and getEEPROm functions in a header for this 
 |						to use along with main, otherwise this has to include main which
 |						isnt good.
+|				3/4- Added checkValidity() thing to ensure good communiction/error checking.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -35,9 +36,12 @@ class myTime : public myDate{
 		BYTE getMinutes();
 		BYTE getHours();
 		void setTime(int hour,int minute,int second);
+		BOOL setTime(char *newTime);
 		void setSecond(int second);
 		void addSeconds(int seconds);
 		const char * getTime();
+		BOOL checkValidity();
+		
 	private:
 		volatile int hour,minute,second;
 		char timeString[11];
@@ -69,6 +73,24 @@ BYTE myTime::getMinutes(){
 
 BYTE myTime::getHours(){
 	return (BYTE)hour;
+}
+
+BOOL myTime::setTime(char *newTime){
+	int tempNum[3];
+	char currentString[10];
+	char tempString[10];
+	strcpy(currentString,newTime);
+	for (int j=0; j<3; j++){
+		for (int i=0; i<2; i++){
+				tempString[i]=currentString[i+j*3];
+		}
+		tempNum[j]=atoi(tempString);
+	}
+	if (tempNum[0]/24==0 && tempNum[1]/60==0 && tempNum[2]/60==0){
+		setTime(tempNum[0],tempNum[1],tempNum[2]);
+		return fTrue;
+	} 
+	return fFalse;
 }
 
 void myTime::setTime(int hour,int minute,int second){
@@ -123,6 +145,14 @@ void myTime::addSeconds(int seconds){
 	}
 }
 
+BOOL myTime::checkValidity(){
+	BOOL stillValid=fTrue;
+	if (second/60==0 && minute/60==0 && hour/24==0){
+		if (checkValidityDate()){return fTrue;}
+	}
+	return fFalse;
+}
+
 const char * myTime::getTime(){
 	char hourString[3], minuteString[3],secondString[3];
 	itoa(hour,hourString,10);
@@ -133,7 +163,6 @@ const char * myTime::getTime(){
 	strcat(timeString,minuteString);
 	strcat(timeString,":");
 	strcat(timeString,secondString);
-	timeString[10] = ' ';
 	timeString[11] = '\0';
 	return timeString;
 }
