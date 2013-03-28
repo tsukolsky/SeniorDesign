@@ -32,6 +32,11 @@
 |			      Need to check logic on what flags are raised and the order that things happen; after
 |				  check is completed need to institute definate startup procedure with heartrate code
 |				  and odometer code (aka TRIP DATA).
+|			3/28- Looked over SendWAVR routine and functionality in main, switched logic. Now depends
+|				  on two flags to activiate, flagGetWAVRtime and flagSendWAVRtime. The flagSendWAVR
+|				  if only used while sending to keep sending and check for a timeout. This allows
+|				  "Revisions Needed (1)" to be irrelevant and logic is much easier to usnerstand. Now
+|				  working on EEPROM trip logic.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -103,7 +108,7 @@ void Wait_sec(volatile int delay);
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
 /*==============================================================================================================*/
-BOOL justStarted, flagQUIT, flagGetUserClock, flagWAVRtime, flagGetWAVRtime, flagInvalidDateTime;
+BOOL justStarted, flagQUIT, flagGetUserClock, flagWAVRtime, flagGetWAVRtime, flagInvalidDateTime, flagUpdateWAVRtime;
 /* justStarted: Whether or not the chip just started up. If so, there is a startup timeout and procedure with	*/
 /*				flags that goes on to accurately set the Time and Date											*/
 /* flagQUIT: We are about to get shut down, need to quick save everything in EEPROM and then just go into		*/
@@ -111,7 +116,8 @@ BOOL justStarted, flagQUIT, flagGetUserClock, flagWAVRtime, flagGetWAVRtime, fla
 /* flagWAVRtime: Whether or not we are using time that was sent from the WAVR or time that we got from the user.*/
 /* flagGetUserClock: WAVR needs the time (GPS not valid), need to get it from the user							*/
 /* flagGetWAVRtime: Get the time from the WAVR, not really sure when this would happen...maybe an error.		*/
-/* flagInvalidDateTime: It's been detected that the time/date in the system is invalid...						*/															
+/* flagInvalidDateTime: It's been detected that the time/date in the system is invalid...						*/	
+/* flagUpdateWAVRtime: We got the User Clock, time to update the WAVR.											*/														
 /*==============================================================================================================*/
 
 /*==============================================================================================================*/
@@ -130,7 +136,7 @@ BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingFo
 /**			Global Variables			**/
 /*****************************************/
 myTime currentTime;			//The clock, must be global. Initiated as nothing.
-BOOL flagSendWAVRTimeout=fFalse, flagSendBoneTimeout=fFalse;
+
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 //INT0, getting something from the watchdog
 ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over.
@@ -170,7 +176,7 @@ ISR(TIMER2_OVF_vect){
 	currentTime.addSeconds(1);
 	//Timeout functionality
 			
-	//If WAVR receive timout is reached (10 seconds) and one of the flags is still up, reset the timeout, bring flags down and enable interrupt pins again		
+	//If WAVR receive timout is reached, either waiting or actually sending, reset the timeout, bring flags down and enable interrupt pins again		
 	if (WAVRtimeout <= COMM_TIMEOUT_SEC && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout++;}
 	else if ((WAVRtimeout > COMM_TIMEOUT_SEC) && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout=0; flagReceiveWAVR=fFalse; flagWaitingForWAVR=fFalse; __enableCommINT();}
 	else if (!flagReceiveWAVR && !flagWaitingForWAVR && WAVRtimeout > 0){WAVRtimeout=0;}	//Both flags aren't set, make sure the timeout is 0
@@ -183,7 +189,7 @@ ISR(TIMER2_OVF_vect){
 	
 	//If sending to WAVR, institue the timeout
 	if (flagSendWAVR && sendingWAVRtimeout <= COMM_TIMEOUT_SEC){sendingWAVRtimeout++;}
-	else if (flagSendWAVR && sendingWAVRtimeout > COMM_TIMEOUT_SEC){flagSendWAVRTimeout=fTrue; flagSendWAVR=fFalse; __enableCommINT();}		//this doesn't allow for a resend.
+	else if (flagSendWAVR && sendingWAVRtimeout > COMM_TIMEOUT_SEC){flagSendWAVR=fFalse; __enableCommINT();}		//this doesn't allow for a resend.
 	else if (!flagSendWAVR && sendingWAVRtimeout > 0){sendingWAVRtimeout=0;}
 	else;
 	
@@ -192,9 +198,9 @@ ISR(TIMER2_OVF_vect){
 	else if (justStarted && startupTimeout > STARTUP_TIMEOUT_SEC){
 		startupTimeout=0; 
 		justStarted=0;
-		if (!flagWAVRtime){flagGetUserClock=fTrue;}				//if we haven't gotten the date and time from WAVR yet, say that we need it.
-		else {flagGetUserClock=fFalse;}
-	}
+		if (!flagWAVRtime){flagGetWAVRtime=fTrue;}				//if we haven't gotten the date and time from WAVR yet, say that we need it.
+		else {flagGetWAVRtime=fFalse;}							//make sure it's low. not really necessary.
+	}	
 	else if (!justStarted && startupTimeout > 0){startupTimeout=0;}
 	else;
 	
@@ -247,10 +253,10 @@ int main(void)
 			flagReceiveBone=fFalse;
 		}			
 		
-		//Send either "I need the date or time" or "Here is the date and time you asked for
-		if (flagSendWAVR && !flagQUIT){
+		//Send either "I need the date or time" or "Here is the date and time you asked for. If we are still waiting for WAVR, then don't send anything.
+		if ((flagGetWAVRtime || flagUpdateWAVRtime) && !flagWaitingForWAVR && !flagQUIT){
 			__killCommINT();
-			SendWAVR(flagGetUserClock);
+			SendWAVR();
 			__enableCommINT();
 		}
 		
@@ -259,7 +265,7 @@ int main(void)
 			//Get the time and date from the user
 			//if time/date valid, set, save,send
 			BOOL valid=fFalse;
-			if (valid){flagSendWAVR=fTrue; flagWAVRtime=fFalse;}				//SendWAVR will reset flagGetUserClock
+			if (valid){flagUpdateWAVRtime=fTrue; flagWAVRtime=fFalse; flagGetWAVRtime=fFalse;}				//SendWAVR() will set the flags down accordingly
 			else {flagSendWAVR=fFalse;}
 		}			
 		
@@ -275,11 +281,7 @@ int main(void)
 		if (flagInvalidDateTime){
 			flagGetWAVRtime=fTrue;
 		}		
-		
-		//if there was a timeout in the sending communication, enable the resend.
-		if (flagSendWAVRTimeout){flagSendWAVR=fTrue; flagSendWAVRTimeout=fFalse;}
-		if (flagSendBoneTimeout){flagSendBoneTimeout=fFalse; flagSendBone=fTrue;}
-			
+					
     }//end while
 }//end main
 

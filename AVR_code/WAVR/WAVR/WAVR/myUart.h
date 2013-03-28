@@ -24,6 +24,7 @@
 |				  flag for receiving since the GPS can send the date too. Need to tweak ReceiveBone()
 |				  string parsing.(2)Tweaked Bone receive. Got rid of flagNoGPSTime-->inverse case of flagUserClock.
 |				  Finished UART transmissions. All that's needed is testing now.
+|			3/28: Added one line in SendGAVR()...flagSendingWAVR=fTrue before it starts.
 |================================================================================
 | Revisions Needed: (1) OPTIONAL-Add "ACKBAD" case in ReceiveGAVR()
 |================================================================================
@@ -85,6 +86,9 @@ void sendGAVR(){
 	
 	//Used for shutdown connection logic if there was a timeout in sending or receiving
 	BOOL flagTimeout=fFalse;
+	
+	//Set sending flag
+	flagSendingGAVR=fTrue;
 	
 	//Transmission protocol
 	while (flagSendingGAVR && !flagTimeout){

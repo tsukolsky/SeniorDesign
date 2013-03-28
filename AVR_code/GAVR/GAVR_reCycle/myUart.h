@@ -27,7 +27,7 @@
 #include "stdtypes.h"
 
 //Declare external flags and clock.
-extern BOOL flagReceiveWAVR, flagReceiveBone, flagSendWAVR, flagSendBone, flagGetUserClock, flagWAVRtime, flagGetWAVRtime,justStarted;
+extern BOOL flagReceiveWAVR, flagReceiveBone, flagSendWAVR, flagSendBone, flagGetUserClock, flagWAVRtime, flagGetWAVRtime,justStarted, flagUpdateWAVRtime,flagWaitingForWAVR;
 extern BOOL flagInvalidDateTime;
 extern myTime currentTime;
 
@@ -115,7 +115,7 @@ void ReceiveWAVR(){
 				state=4; 
 				PrintWAVR("ACKGB."); 
 				flagGetUserClock=fTrue;					//alert that we need to get the string
-				if (flagWAVRtime){flagWAVRtime=fFalse;}	//let the WAVR flag go down so that if a string comes in, we can allocate it.
+				if (flagWAVRtime){flagWAVRtime=fFalse; flagUpdateWAVRtime=fFalse;}	//let the WAVR flag go down so that if a string comes in, we can allocate it. Mkae sure we don't try and send our time right away.
 			} else if ((recString[4]==':') != (recString[5]==':')){state=3;}	//go parse the string
 			else {PrintWAVR("ACKERROR.");state=4;}
 			break;
@@ -223,12 +223,15 @@ void ReceiveWAVR(){
 /*************************************************************************************************************/
 void ReceiveBone(){}
 /*************************************************************************************************************/
-void SendWAVR(BOOL askOrSend){
+void SendWAVR(){
 	//Declare variables to be used.
 	volatile static unsigned int state=0;
 	volatile BOOL noCarriage=fTrue, flagWaitingToSend=fFalse;
 	char recChar, recString[40], sentString[40];
 	unsigned int strLoc=0;
+	
+	//Set Flag to begin
+	flagSendWAVR=fTrue;
 	
 	do{		
 	/***************************************************************NEW METHOD-STATE MACHINE**********************************************************/
@@ -260,7 +263,7 @@ void SendWAVR(BOOL askOrSend){
 				//Put together the string that is being received
 				while (noCarriage && flagSendWAVR){
 					while (!(UCSR1A & (1 << RXC1)) && flagSendWAVR);
-					if (!flagSendWAVR){state=5; break;}	//there was a timeout, don't do anything else. Leave state the way it was??
+					if (!flagSendWAVR){state=5; break;}	//there was a timeout, don't do anything else. Flags aren't reset.
 					recChar=UDR1;
 					recString[strLoc++]=recChar;
 					if (recChar=='.'){recString[strLoc]='\0'; state=2;}
@@ -271,18 +274,17 @@ void SendWAVR(BOOL askOrSend){
 				}//end case 1
 			case 2:{
 				if (!strncmp(recString,"ACKG.",5)){state=3;}//go and send what we need.
-				else if (!strncmp(recString,"ACKNEED.",8)){/*Exit gracefully*/state=5;}		//GAVR knows we need time, if it has it it will tell us. Use flagGetWAVRtime as hint.
-				else if (!strcmp(recString,sentString)){state=6;}	//Got the correct user clock, we can kill that signal now since it was set.
-				else if (!strncmp(recString,"ACKNO.",6)){state=6; flagGetWAVRtime=fTrue;}	//We shouldn't have sent anything, just exit. Maybe we should ask for the WAVR time now.
+				else if (!strncmp(recString,"ACKNEED.",8)){/*Exit gracefully*/state=5; flagWaitingForWAVR=fTrue; flagGetWAVRtime=fTrue; flagUpdateWAVRtime=fFalse;}		//GAVR knows we need time, if it has it it will tell us. GetWAVRtime flag is already set, make sure it's up though.
+				else if (!strcmp(recString,sentString)){state=6; flagUpdateWAVRtime=fFalse; flagGetWAVRtime=fFalse;}	//Got the correct user clock, we can kill that signal now since it was set.
+				else if (!strncmp(recString,"ACKNO.",6)){state=6; flagGetWAVRtime=fTrue; flagUpdateWAVRtime=fFalse;}	//We shouldn't have sent anything, just exit. Maybe we should ask for the WAVR time now.
 				else if (!strncmp(recString,"ACKBAD.",7)){state=4;} //check validitity of date and time
 				else{state=5;}	//ACKERROR case.
 				break;
 				}//end case 2
 			case 3:{			
-				if (flagGetWAVRtime){//No real case that this would happen.
+				if (flagGetWAVRtime && !flagUpdateWAVRtime){//No real case that this would happen.
 					PrintWAVR("SYNNEED.");
-				}
-				if (flagGetUserClock){	//The WAVR needed the time, send it back
+				} else if (flagUpdateWAVRtime && !flagGetWAVRtime){	//The WAVR needed the time, send it back
 					strcpy(sentString,"ACK");
 					strcpy(sentString,currentTime.getTime());
 					strcat(sentString,"/");
@@ -291,9 +293,14 @@ void SendWAVR(BOOL askOrSend){
 					PrintWAVR("SYN");
 					printTimeDate(fFalse,fTrue,fTrue);		//prints time and date to WAVR
 					PutUartChWAVR('\0');					//just for safe keeping					
-				} 
-
-				
+				} else if (flagUpdateWAVRtime && flagGetWAVRtime){
+					PrintWAVR("SYNNEED.");
+					flagUpdateWAVRtime=fFalse;
+				} else if (!flagGetUserClock && !flagGetWAVRtime){
+					PrintWAVR("SYNNEED.");
+					flagGetWAVRtime=fTrue;
+				} else;
+			
 				//Reset variables for next reception
 				for (int i=0; i<=strLoc; i++){recString[i]=NULL;}
 				strLoc=0;
@@ -304,17 +311,16 @@ void SendWAVR(BOOL askOrSend){
 				}//end case 3
 			case 4:{
 				//ACKBAD
-				//Check validity of date and time
+				//Check validity of date and time, then exit
 				BOOL dateOK = currentTime.checkValidity();
-				if (dateOK){state=5;}
-				else {state=6; flagInvalidDateTime=fTrue;}
+				if (!dateOK){flagInvalidDateTime=fTrue;}
+				state=6;
 				break;	
 				}//end case 4
 			case 5:{
-				//ACKERROR or timeout, just exit and try again
+				//ACKERROR or timeout, just exit and try again without resetting flags. Same as case 6...
 				state=0;
 				flagSendWAVR=fFalse;
-				flagWaitingToSend=fTrue;
 				break;
 				}//end case  5
 			case 6:{
@@ -327,12 +333,6 @@ void SendWAVR(BOOL askOrSend){
 	
 		}//end switch
 	} while (flagSendWAVR);	
-	
-	//Got out of do while, if it was because of ACKERROR, timeout, or innapropriate ACKBAD, resend with same flags enabled
-	if (flagWaitingToSend){
-		flagSendWAVR=fTrue;
-		flagWaitingToSend=fFalse;
-	}
 }//end function
 /*************************************************************************************************************/
 /*************************************************************************************************************/
