@@ -124,14 +124,6 @@
 #define bnTXD		1
 
 /*******************************************/
-/**					INT2				  **/
-/*******************************************/ 
-#define prtINT2		PORTB
-#define ddrINT2		DDRB
-#define pinINT2		PINB
-#define bnINT2		2
-
-/*******************************************/
 /**			SPI Definitions				  **/
 /*******************************************/
 #define	prtSpi0		PORTB

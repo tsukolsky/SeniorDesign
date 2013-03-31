@@ -16,17 +16,20 @@
 | *NOTES:
 \*******************************************************************************/
 
+#include <avr/eeprom.h>
+#include "stdtypes.h"
+
 using namespace std;
 
 //Declare the global variable that matters
 extern myTime currentTime;
 
 //EEPROM variables
-BYTE EEMEM eeHour = 12;
-BYTE EEMEM eeMinute = 40;
+BYTE EEMEM eeHour = 5;
+BYTE EEMEM eeMinute = 31;
 BYTE EEMEM eeSecond = 0;
-BYTE EEMEM eeMonth = 2;
-BYTE EEMEM eeDay = 10;
+BYTE EEMEM eeMonth = 3;
+BYTE EEMEM eeDay = 31;
 WORD EEMEM eeYear = 2013;
 
 
