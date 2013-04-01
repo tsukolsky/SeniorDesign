@@ -16,9 +16,6 @@
 | *NOTES:
 \*******************************************************************************/
 
-#include <avr/eeprom.h>
-#include "stdtypes.h"
-
 using namespace std;
 
 //Declare the global variable that matters
