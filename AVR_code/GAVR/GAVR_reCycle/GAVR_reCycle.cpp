@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 3/27/13
+| Last Revised: 4/2/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -37,6 +37,8 @@
 |				  if only used while sending to keep sending and check for a timeout. This allows
 |				  "Revisions Needed (1)" to be irrelevant and logic is much easier to usnerstand. Now
 |				  working on EEPROM trip logic.
+|			4/2-  Started integrating everything into PCB module. Integrated Speed and HR, got compilation.
+|				  Going to test pcbTest kill workings, then test WAVR sending ability, then WAVR->GAVR.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -74,6 +76,7 @@ using namespace std;
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
 #include "ATmega2560.h"
 #include "myUart.h"
+#include "trip.h"
 
 /*****************************************/
 /**			UART Frequency/BAUD			**/
@@ -85,7 +88,7 @@ using namespace std;
 /*****************************************/
 /**			TIMEOUT DEFINITIONS			**/
 /*****************************************/
-#define COMM_TIMEOUT_SEC 3
+#define COMM_TIMEOUT_SEC 5
 #define STARTUP_TIMEOUT_SEC 40
 
 /*****************************************/
@@ -97,6 +100,17 @@ using namespace std;
 #define __enableSpeedINT() EIMSK |= (1 << INT6)
 
 /*****************************************/
+/**			Speed and HR Defs			**/
+/*****************************************/
+#define TIMER1_OFFSET		65535
+#define BAD_SPEED_THRESH	4
+#define CALC_SPEED_THRESH	3				//at 20MPH, 4 interrupts take 1 second w/clk, should be at least every second
+#define MINIMUM_HR_THRESH	350				//
+#define MAXIMUM_HR_THRESH	800				//seen in testing it usually doesn't go more than 100 above or below 512 ~ 1.67V
+#define NUM_MS				4				//4 ms
+#define ONE_MS				0x20			//32 ticks on 8MHz/256 is 1ms
+
+/*****************************************/
 /**			Foward Declarations			**/
 /*****************************************/
 void DeviceInit();
@@ -104,6 +118,9 @@ void AppInit(unsigned int ubrr);
 void EnableRTCTimer();
 void Wait_ms(volatile int delay);
 void Wait_sec(volatile int delay);
+void initHRSensing();
+void initSpeedSensing();
+WORD GetADC();
 
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
@@ -136,8 +153,32 @@ BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingFo
 /**			Global Variables			**/
 /*****************************************/
 myTime currentTime;			//The clock, must be global. Initiated as nothing.
+trip globalTrip;
+
+WORD numberOfSpeedOverflows=0;
+BOOL flagNoSpeed=fFalse;
+BOOL updateScreen=fFalse;
+unsigned int HRSAMPLES[300];
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
+//ISR for beaglebone uart input
+ISR(USART0_RX_vect){
+	cli();
+	flagWaitingForBone=fFalse;
+	UCSR0B &= ~(1 << RXCIE0);
+	flagReceiveBone=fTrue;
+	sei();
+}
+/************************************************************************/
+//ISR for WAVR uart input.
+ISR(USART1_RX_vect){
+	cli();
+	flagWaitingForWAVR=fFalse;
+	UCSR1B &= ~(1 << RXCIE1);	//clear interrupt. Set UART flag
+	flagReceiveWAVR=fTrue;
+	sei();
+}
+/************************************************************************/
 //INT0, getting something from the watchdog
 ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over.
 	cli();
@@ -148,7 +189,7 @@ ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over
 	PrintBone("ACKW");			//ACK grom GAVR
 	sei();
 }
-
+/************************************************************************/
 //INT1, getting something from the BeagleBone
 ISR(INT1_vect){
 	cli();
@@ -158,17 +199,62 @@ ISR(INT1_vect){
 	PrintWAVR("ACKB");			//Ack from GAVR
 	sei();
 }
-
-//INT6->IMMININENT SHUTDOWN
+/************************************************************************/
+//INT6-> Speed magnet went around.
 ISR(INT6_vect){
-	flagQUIT=fTrue;
-}
-
-//INT7-> Speed magnet went around.
-ISR(INT7_vect){
 	//Do something with speed/odometer/trip thing.
+	cli();
+	unsigned int value=TCNT1;
+	
+	prtDEBUGled |= (1 << bnDBG1);
+	Wait_ms(10);
+	if (flagNoSpeed){
+		flagNoSpeed=fFalse;
+		globalTrip.resetSpeedPoints();
+	} else {
+		globalTrip.addSpeedDataPoint(value+numberOfSpeedOverflows*TIMER1_OFFSET);
+	}
+	numberOfSpeedOverflows=0;	
+	
+	prtDEBUGled &= ~(1 << bnDBG1);
+	TCNT1=0x00;
+	sei();
 }
+/************************************************************************/
+//INT7->IMMININENT SHUTDOWN
+ISR(INT7_vect){
+	cli();
+	if (flagQUIT){flagQUIT=fFalse;}
+	else{flagQUIT=fTrue;}
+	sei();
+}
+/************************************************************************/
+ISR(TIMER0_COMPA_vect){
+	cli();
+	//Declare variables
+	volatile WORD signal=0;
+	volatile static unsigned int location=0;
+	
+	//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
+	signal = GetADC();		//retrieves ADC reading on ADC0
+	HRSAMPLES[location++]=signal;
+	if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300);}
 
+	//Re-enable interrupts
+	sei();
+}
+/************************************************************************/
+//Timer for Speed.
+ISR(TIMER1_OVF_vect){
+	cli();
+	if (numberOfSpeedOverflows++ > BAD_SPEED_THRESH && !flagNoSpeed){
+		//Let the INT0 know that on next interrupt it shouldn't calc speed, but initialize "speedPoints" in odometer class.
+		flagNoSpeed=fTrue;
+		globalTrip.resetSpeedPoints();					//repetitive, done in the interrupt vector? Needs to be done twice just in case the wheel stops spinning.
+	}
+	sei();
+}
+/************************************************************************/
 ISR(TIMER2_OVF_vect){
 	volatile static int WAVRtimeout=0, BONEtimeout=0, startupTimeout=0, sendingWAVRtimeout=0;
 	//pinSTATUSled2 |= (1 << bnSTATUSled2);
@@ -193,6 +279,7 @@ ISR(TIMER2_OVF_vect){
 	else if (!flagSendWAVR && sendingWAVRtimeout > 0){sendingWAVRtimeout=0;}
 	else;
 	
+	/*
 	//If we just started, increment the startUpTimeout value. When it hits 30, logic goes into place for user to enter time and date
 	if (justStarted && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
 	else if (justStarted && startupTimeout > STARTUP_TIMEOUT_SEC){
@@ -202,27 +289,10 @@ ISR(TIMER2_OVF_vect){
 		else {flagGetWAVRtime=fFalse;}							//make sure it's low. not really necessary.
 	}	
 	else if (!justStarted && startupTimeout > 0){startupTimeout=0;}
-	else;
+	else;*/
 	
 }
 
-//ISR for beaglebone uart input
-ISR(USART0_RX_vect){
-	cli();
-	flagWaitingForBone=fFalse;
-	UCSR0B &= ~(1 << RXCIE0);
-	flagReceiveBone=fTrue;
-	sei();
-}
-
-//ISR for WAVR uart input. 
-ISR(USART1_RX_vect){
-	cli();
-	flagWaitingForWAVR=fFalse;
-	UCSR1B &= ~(1 << RXCIE1);	//clear interrupt. Set UART flag
-	flagReceiveWAVR=fTrue;
-	sei();
-}	
 /*--------------------------END-Interrupt Service Routines--------------------------------------------------------------------------------*/
 /*--------------------------START-Main Program--------------------------------------------------------------------------------------------*/
 
@@ -233,30 +303,36 @@ int main(void)
 	AppInit(MYUBRR);	//initializes pins for our setting
 	EnableRTCTimer();	//RTC
 	getDateTime_eeprom(fTrue,fTrue);	//Get last saved date and time.
+	initSpeedSensing();
+	initHRSensing();
 	sei();
     while(fTrue)
     {	
 		//Receiving from WAVR. Either a time string or asking user to set date/time/both.
 		if (flagReceiveWAVR && !flagQUIT){
-			//prtDEBUGleds |= (1 << bnWAVRCOMMled);
-			ReceiveWAVR();
+			prtDEBUGled2 |= (1 << bnDBG9);		//second from bottom, next to RTC...
+			Wait_ms(1000);
+			//ReceiveWAVR();
 			__enableCommINT();
-			//prtDEBUGleds &= ~(1 << bnWAVRCOMMled);
+			prtDEBUGled2 &= ~(1 << bnDBG9);
 		}
 		
 		//Receiving from the Bone. Could be a number of things. Needs to implement a state machine.
 		if (flagReceiveBone && !flagQUIT){
-			//prtDEBUGleds |= (1 << bnBONECOMMled);
-			ReceiveBone();
-			//prtDEBUGleds &= ~(1 << bnBONECOMMled);
+			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
+			Wait_ms(1000);
+			//ReceiveBone();
+			prtDEBUGled2 &= ~(1 << bnDBG8);	
 			__enableCommINT();
-			flagReceiveBone=fFalse;
 		}			
 		
 		//Send either "I need the date or time" or "Here is the date and time you asked for. If we are still waiting for WAVR, then don't send anything.
 		if ((flagGetWAVRtime || flagUpdateWAVRtime) && !flagWaitingForWAVR && !flagQUIT){
+			prtDEBUGled |= (1 << bnDBG2);		//third from top.
 			__killCommINT();
-			SendWAVR();
+			Wait_ms(1000);
+			//SendWAVR();
+			prtDEBUGled &= ~(1 << bnDBG2);	
 			__enableCommINT();
 		}
 		
@@ -270,18 +346,25 @@ int main(void)
 		}			
 		
 		if (flagQUIT){
+			//Show that we know we are supposed to quit
+			cli();
+			prtDEBUGled |= (1 << bnDBG0);
+			Wait_ms(1000);
+			prtDEBUGled = 0x00;
+			prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
+			prtWAVRio &= ~(1 << bnG0W3);
 			//Save all trip date into EEPROM with "unfinished/finished" label.
 			
 			//Power Down
 			SMCR = (1 << SM1);		//power down mode
 			SMCR |= (1 << SE);		//enable sleep
+			sei();
 			asm volatile("SLEEP");	//go to sleep
 		}		
 		
 		if (flagInvalidDateTime){
-			flagGetWAVRtime=fTrue;
-		}		
-					
+			//flagGetWAVRtime=fTrue;
+		}						
     }//end while
 }//end main
 
@@ -333,11 +416,11 @@ void AppInit(unsigned int ubrr){
 	//Enable LEDs
 	ddrDEBUGled = 0xFF;	//all outputs
 	prtDEBUGled = 0x00;	//all low
-	ddrDEBUGled2 |= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
+	ddrDEBUGled2 &= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
 	prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
 	
 	//Disable power to all peripherals
-	PRR0 |= (1 << PRTWI)|(1 << PRTIM2)|(1 << PRTIM1)|(1 << PRTIM0)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
+	PRR0 |= (1 << PRTWI)|(1 << PRTIM1)|(1 << PRTIM0)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
 	//Set up Pin Change interrupts
 	EICRA |= (1 << ISC01)|(1 << ISC00)|(1 << ISC11)|(1 << ISC10);			//rising edge of INT0 and INT1 enables interrupt
@@ -346,18 +429,24 @@ void AppInit(unsigned int ubrr){
 	__killSpeedINT();
 	EIMSK |= (1 << INT7);													//let it know if shutdown is imminent
 	
+
 	//Initialize flags
 	justStarted=fTrue;
+	flagQUIT=fFalse;
+	flagGetUserClock=fFalse;
+	flagWAVRtime=fFalse;
+	flagGetWAVRtime=fFalse;
+	flagInvalidDateTime=fFalse;
+	flagUpdateWAVRtime=fFalse;
+	
 	flagReceiveWAVR=fFalse;
 	flagReceiveBone=fFalse;
 	flagWaitingForWAVR=fFalse;
 	flagWaitingForBone=fFalse;
-	flagGetUserClock=fFalse;
 	flagSendWAVR=fFalse;
 	flagSendBone=fFalse;
-	flagWAVRtime=fFalse;
-	flagQUIT=fFalse;
-	flagGetWAVRtime=fFalse;
+	__enableCommINT();
+	
 }
 /*************************************************************************************************************/
 void EnableRTCTimer(){
@@ -396,5 +485,57 @@ void Wait_sec(volatile int delay){
 	while (currentTime.getSeconds() != endingTime){asm volatile ("nop");}
 }
 
+/*************************************************************************************************************/
+void initSpeedSensing(){
+	//Initialize Timer 1(16-bit), counter is read on an interrupt to measure speed. assumes rider is going  above a certain speed for initial test.
+	PRR0 &= ~(1 << PRTIM1);
+	TCCR1B |= (1 << CS12); 				//Prescaler of 256 for system clock
+	TIFR1= (1 << TOV2);					//Make sure the overflow flag is not already set
+	TCNT1 = 0x00;
+	TIMSK1=(1 << TOIE2);
+
+	__enableSpeedINT();
+}
+/*************************************************************************************************************/
+void initHRSensing(){
+	//Initialize timer 0, counter compare on TCNTA compare equals
+	PRR0 &= ~(1 << PRTIM0);
+	TCCR0A = (1 << WGM01);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
+	TCCR0B = (1 << CS02);				//clk/256
+	OCR0A = ONE_MS*NUM_MS;				//Number of Milliseconds
+	TCNT0 = 0x00;						//Initialize
+	TIMSK0 = (1 << OCIE0A);				//enable OCIE2A
+}
+/*************************************************************************************************************/
+WORD GetADC(){
+	volatile WORD ADCreading=0;
+
+	
+	//Take two ADC readings, throw the first one out.
+	for (int i=0; i<2; i++){ADCSRA |= (1 << ADSC); while(ADCSRA & (1 << ADSC));}
+	
+	//Get the last ADC reading.	
+	ADCreading = ADCL;
+	ADCreading |= (ADCH << 8);
+	
+/*	if (reps++>500){
+		flagUpdateUserStats=fTrue;
+		reps=0;
+	}*/
+	/*****Debugging******
+	volatile static WORD reps=0;
+	if (reps++>2){
+		char tempString[10];
+		utoa(ADCreading,tempString,10);
+		tempString[8]='-';	
+		tempString[9]='\0';
+		PutUart0Ch('-');
+		Print0(tempString);
+		reps=0;
+	}	
+	********************/
+	return ADCreading;
+}
+	
 /*************************************************************************************************************/
 /*************************************************************************************************************/

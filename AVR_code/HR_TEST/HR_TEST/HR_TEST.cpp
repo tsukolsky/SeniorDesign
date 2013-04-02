@@ -144,8 +144,7 @@ ISR(TIMER0_COMPA_vect){
 	signal = GetADC();		//retrieves ADC reading on ADC0
 	HRSAMPLES[location++]=signal;
 	if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300);}
-/*		
-		}}*/	
+	
 	//Re-enable interrupts
 	sei();
 }

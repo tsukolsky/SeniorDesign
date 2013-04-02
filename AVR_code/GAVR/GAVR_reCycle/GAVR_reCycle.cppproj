@@ -88,16 +88,25 @@
     <Compile Include="GAVR_reCycle.cpp">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="heartMonitor.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="myDate.h">
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="myTime.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="odometer.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="stdtypes.h">
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="myUart.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trip.h">
       <SubType>compile</SubType>
     </Compile>
   </ItemGroup>

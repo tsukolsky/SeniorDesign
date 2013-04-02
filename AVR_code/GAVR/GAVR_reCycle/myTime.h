@@ -146,7 +146,6 @@ void myTime::addSeconds(int seconds){
 }
 
 BOOL myTime::checkValidity(){
-	BOOL stillValid=fTrue;
 	if (second/60==0 && minute/60==0 && hour/24==0){
 		if (checkValidityDate()){return fTrue;}
 	}

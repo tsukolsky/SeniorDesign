@@ -63,7 +63,8 @@ ISR(TIMER2_OVF_vect){
 }
 
 ISR(INT7_vect){
-	flagKill=1;
+	if (flagKill){flagKill=0;}
+	else{flagKill=1;}
 }
 
 int main(void)
@@ -138,6 +139,9 @@ void AppInit(unsigned int ubrr){
 	EICRB = (1 << ISC71)|(1 << ISC70);
 	EIMSK = (1 << INT7);
 	
+	//Show the WAVR that I have power and am operating
+	prtWAVRio |= (1 << bnG0W3);
+	
 	sei();
 }
 
@@ -148,6 +152,7 @@ void killPower(){
 	Wait_ms(1000);
 	prtDEBUGled &= ~(1 << bnDBG0);
 	prtDEBUGled2 &= ~(1 << bnDBG10);
+	prtWAVRio &= ~(1 << bnG0W3);
 	SMCR = (1 << SM1);
 	SMCR |= (1 << SE);
 	Wait_ms(1);

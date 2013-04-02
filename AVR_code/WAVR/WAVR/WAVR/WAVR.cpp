@@ -2,7 +2,7 @@
 | WAVR.cpp
 | Author: Todd Sukolsky
 | Initial Build: 1/28/2013
-| Last Revised: 4/1/13
+| Last Revised: 4/2/13
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main.cpp file for the RTC to be implemented on the 
@@ -55,6 +55,8 @@
 |				 is powered off. Added a debugging mechanism for turning on and off peripherals, works well. Implements
 |				 a counter. Also keeps the temperature monitor on all the time, there is something fishy when you don't,
 |				 almost like it is drawing an ubsurd amount of current. 
+|			4/2- Added functionality of GPIO line in power up for GAVR. If it doesn't power on when I want, looks for  the GPIO
+|				 line and then sends an interrupt.
 |================================================================================
 | Revisions Needed: 
 |		(1)	  3/26- Currently, if the WAVR is going to update the time, but not the date, on the GAVR it has to 
@@ -103,7 +105,7 @@ using namespace std;
 #define SLEEP_TICKS_LOWV	12				//sleeps for 60 seconds when battery voltage is low, running on backup.
 
 //ADC and Temp defines
-#define LOW_BATT_ADC		 700    //change: 882; (7.4*(14.7/114.7)/1.1)(1024)=882
+#define LOW_BATT_ADC		 882    //change: 882; (7.4*(14.7/114.7)/1.1)(1024)=882
 #define HIGH_TEMP			 12900	//~99 celcius
 
 //Power Management Macros
@@ -195,7 +197,7 @@ ISR(PCINT2_vect){
 	}
 	sei();
 }	
-
+/********************************************************/
 //INT2: Getting information from BeagleBone
 ISR(INT2_vect){	//about to get time, get things ready
 	cli();
@@ -209,7 +211,25 @@ ISR(INT2_vect){	//about to get time, get things ready
 	}
 	sei();
 }
+/********************************************************/
+//UART Receive from BeagleBone
+ISR(USART0_RX_vect){
+	cli();
+	UCSR0B &= ~(1 << RXCIE0);
+	__killCommINT();				//make sure all interrupts are disabled that could cripple protocol
+	flagReceivingBone=fTrue;
+	sei();
+}
+/********************************************************/
+ISR(USART1_RX_vect){
+	cli();
+	UCSR1B &= ~(1 <<RXCIE1);	//disable interrupt
+	__killCommINT();
+	flagReceivingGAVR=fTrue;
+	sei();
+}
 
+/********************************************************/
 //RTC Timer.
 ISR(TIMER2_OVF_vect){
 	prtSLEEPled ^= (1 << bnSLEEPled);
@@ -247,22 +267,6 @@ ISR(TIMER2_OVF_vect){
 	else;*/
 }//End timer 2 overflow.
 
-//UART Receive from BeagleBone
-ISR(USART0_RX_vect){
-	cli();
-	UCSR0B &= ~(1 << RXCIE0);
-	__killCommINT();				//make sure all interrupts are disabled that could cripple protocol
-	flagReceivingBone=fTrue;
-	sei();
-}
-
-ISR(USART1_RX_vect){
-	cli();
-	UCSR1B &= ~(1 <<RXCIE1);	//disable interrupt
-	__killCommINT();
-	flagReceivingGAVR=fTrue;
-	sei();
-}
 
 /*--------------------------END-Interrupt Service Routines--------------------------------------------------------------------------------*/
 /*--------------------------START-Main Program--------------------------------------------------------------------------------------------*/
@@ -297,7 +301,7 @@ int main(void)
 	unsigned int counter=0;
 	while(fTrue)
 	{		
-		Wait_sec(3);
+		
 		//If receiving UART string, go get rest of it.
 		if (flagReceivingBone){
 			//ReceiveBone();
@@ -356,6 +360,9 @@ int main(void)
 		}//end normal mode Check Analog Signals		
 		else if (counter >=3 && flagNormalMode){counter=0; flagNewShutdown=fTrue; flagShutdown=fTrue;}		//forces a shutdown for at least one cycle, see how the thing reacts.
 		
+		//Waiting...
+		Wait_sec(4);
+				
 		//About to shutdown, save EEPROM
 		if (flagNewShutdown){
 			//Make sure nothing messes with the routine that we care about
@@ -404,13 +411,11 @@ void DeviceInit(){
 	DDRB = 0;
 	DDRC = 0;
 	DDRD = 0;
-	//ddrMAINen |= (1 << bnMAINen);
 	
 	PORTA = 0;
 	PORTB = 0;
 	PORTC = 0;
 	PORTD = 0;
-	//__enableMain();
 }
 /*************************************************************************************************************/
 void AppInit(unsigned int ubrr){
@@ -560,7 +565,7 @@ void GoToSleep(BOOL shortOrLong){
 		//Give time to registers
 		Wait_ms(1);
 		//Go to sleep
-		while (sleepTicks < sleepTime){
+		while (sleepTicks < sleepTime && flagGoToSleep){
 			asm volatile("SLEEP");
 			sleepTicks++;
 		} //endwhile
@@ -677,6 +682,7 @@ void PowerUp(WORD interval){
 	__enableGPSandGAVR();
 	Wait_sec(interval);
 	//while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
+	if (!(pinGAVRio & (1 << bnW3G0))){prtInterrupts |= (1 << bnGAVRint); Wait_ms(200); prtInterrupts  &= ~(1 << bnGAVRint);}	//sends interrupt to come out of power-down, waits, goes forward.
 	
 	//Power on LCD
 	__enableLCD();

@@ -226,7 +226,7 @@ void ReceiveBone(){}
 void SendWAVR(){
 	//Declare variables to be used.
 	volatile static unsigned int state=0;
-	volatile BOOL noCarriage=fTrue, flagWaitingToSend=fFalse;
+	volatile BOOL noCarriage=fTrue;
 	char recChar, recString[40], sentString[40];
 	unsigned int strLoc=0;
 	
