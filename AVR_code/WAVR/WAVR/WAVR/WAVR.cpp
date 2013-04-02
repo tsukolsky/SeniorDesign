@@ -2,7 +2,7 @@
 | WAVR.cpp
 | Author: Todd Sukolsky
 | Initial Build: 1/28/2013
-| Last Revised: 3/27/13
+| Last Revised: 4/1/13
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main.cpp file for the RTC to be implemented on the 
@@ -47,6 +47,14 @@
 |				 make it solid for GAVR receive and send to work correctly.(2)FInished start procedure,
 |				 has timeout and flags are set when 1. GPS sends string, 2. Timeout occurs, 3. restart 
 |				 (will send what we had in EEPROM before GPS comes in if it's delayed)
+|		   3/31-4/1- Changed clk fused for the clock to run off of 1MHz instead of the 20MHz, @2.7V backup
+|				 the chip is unable to boot and access data memory among other things. Had to add some
+|				 of the boolean variables to the InitBools() routine (made in an effort to debug.). The GAVR
+|				 needs to have it's capacitors killed whenever there is a kill of power, the transient response is quite slow.
+|				 In real world application this won't matter though since it will be a long period of time that the device
+|				 is powered off. Added a debugging mechanism for turning on and off peripherals, works well. Implements
+|				 a counter. Also keeps the temperature monitor on all the time, there is something fishy when you don't,
+|				 almost like it is drawing an ubsurd amount of current. 
 |================================================================================
 | Revisions Needed: 
 |		(1)	  3/26- Currently, if the WAVR is going to update the time, but not the date, on the GAVR it has to 
@@ -78,13 +86,13 @@
 using namespace std;
 
 //USART/BAUD defines
-#define FOSC				8000000		//20 MHz
+#define FOSC				1000000			//1 MHz
 #define ASY_OSC				32768			//32.768 kHz
 #define BAUD				9600
 #define MYUBRR FOSC/16/BAUD - 1				//declares baud rate
 
 //Declare Time between power on triggers (in ms)
-#define POWER_UP_INTERVAL	3000
+#define POWER_UP_INTERVAL	3
 
 //Declare timeout value
 #define COMM_TIMEOUT_SEC	6
@@ -127,6 +135,7 @@ void TakeADC();
 void GetTemp();
 void PowerUp(WORD interval);
 void PowerDown();
+void InitBools();
 
 /*********************************************GLOBAL VARIABLES***************************************************/
 /****************************************************************************************************************/
@@ -139,7 +148,7 @@ myTime currentTime;  //The clock, MUST BE GLOBAL. In final program, will initiat
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
 /*==============================================================================================================*/
-BOOL flagGoToSleep, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaitingForReceiveGAVR;
+BOOL flagGoToSleep=fTrue, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaitingForReceiveGAVR;
 /* flagGoToSleep: go to sleep on end of while(fTrue) loop														*/
 /* flagUARTbone: receiving info from the bone																	*/
 /* flagNormalMode: normal mode of operation, take ADC and temp readings											*/
@@ -264,27 +273,28 @@ int main(void)
 	DeviceInit();
 	AppInit(MYUBRR);
 	EnableRTCTimer();
+	InitBools();
 	getDateTime_eeprom(fTrue,fTrue);
 	//Prep/make sure power/temp is good
-	//GetTemp();
-	flagGoodTemp=fTrue;
+	Wait_sec(2);
+	GetTemp();
 	TakeADC();
 	if (flagGoodVolts && flagGoodTemp){				//Good to power on system
 		__enableCommINT();
 		PowerUp(POWER_UP_INTERVAL);
 		flagFreshStart=fTrue;
 		flagShutdown=fFalse;
-		flagNormalMode=fTrue;
 	} else {										//Something isn't right, don't power on the system.
 		__killCommINT();
-		flagNormalMode=fTrue;
 		flagShutdown=fTrue;
 		flagFreshStart=fFalse;
 	}
 	
 	PrintBone("Hello BeagleBone.");	
 	printTimeDate(fTrue,fTrue);
+	prtSTATUSled |= (1 << bnSTATUSled);
 	//main programming loop
+	unsigned int counter=0;
 	while(fTrue)
 	{		
 		Wait_sec(3);
@@ -328,23 +338,23 @@ int main(void)
 		}//end time capture/save
 		
 		//Take ADC reading to check battery level, temp to check board temperature.
-		if (flagNormalMode){
+		if (flagNormalMode && counter < 3){
 			TakeADC();
-			//GetTemp();
-			flagGoodTemp=fTrue;
+			GetTemp();
+			counter++;
 			
 			//If both are good & shutdown is low, keep it low. If shutdown is high, pull low and enable restart
 			if (flagGoodVolts && flagGoodTemp){
-				if(flagShutdown){restart = fTrue;}
-				flagShutdown = fFalse;
+				if(flagShutdown){restart = fTrue; flagShutdown=fFalse;}
 			//If one is bad and shutdown is low, pull high as well as pull new shutdown high to indicate imminent power kill
 			} else {
 				if (!flagShutdown){
 					flagNewShutdown = fTrue;
+					flagShutdown=fTrue;
 				}
-				flagShutdown = fTrue;
 			}
-		}//end normal mode Check Analog Signals			
+		}//end normal mode Check Analog Signals		
+		else if (counter >=3 && flagNormalMode){counter=0; flagNewShutdown=fTrue; flagShutdown=fTrue;}		//forces a shutdown for at least one cycle, see how the thing reacts.
 		
 		//About to shutdown, save EEPROM
 		if (flagNewShutdown){
@@ -433,7 +443,7 @@ void AppInit(unsigned int ubrr){
 	ddrSLEEPled |= (1 << bnSLEEPled);
 	ddrSTATUSled |= (1 << bnSTATUSled);
 	prtSLEEPled |= (1 << bnSLEEPled);	//turn off initially
-	prtSTATUSled |= (1 << bnSTATUSled);	//turn on initially
+	prtSTATUSled &= ~(1 << bnSTATUSled);	//turn on initially
 	
 	//Enable BB and GAVR interrupts for COMMUNICATION
 	ddrBONEINT |= (1 << bnBONEINT);
@@ -451,7 +461,7 @@ void AppInit(unsigned int ubrr){
 	ddrMAINen |= (1 << bnMAINen);
 	__killMain();
 	__killBeagleBone();
-	__killTemp();
+	__enableTemp();
 	__killLCD();
 	__killGPSandGAVR();
 
@@ -468,12 +478,17 @@ void AppInit(unsigned int ubrr){
 	prtSpi0 |= (1 << bnSS0)|(1 << bnSck0);		//keep SS and SCK high
 	prtSpi0 &= ~(1 << bnMosi0);		//keep Miso low
 	
+}
+/*************************************************************************************************************/
+void InitBools(){
 	//Init variables
 	flagGoToSleep = fTrue;			//changes to fTrue in final implementation
 	flagReceivingBone = fFalse;
 	flagNormalMode=fTrue;
+	flagReceivingGAVR=fFalse;
+	flagWaitingForReceiveGAVR=fFalse;
 
-	flagUpdateGAVRClock=fFalse;	
+	flagUpdateGAVRClock=fFalse;
 	flagSendingGAVR=fFalse;
 	flagUserClock=fFalse;
 	flagInvalidDateTime=fFalse;
@@ -481,7 +496,7 @@ void AppInit(unsigned int ubrr){
 	flagGPSTime=fFalse;
 	
 	restart=fFalse;
-	flagNewShutdown=fFalse;	
+	//flagNewShutdown=fFalse;
 	flagShutdown=fFalse;		//Initialized in startup procedure in beginning of "main"
 	flagGoodVolts=fFalse;
 	flagGoodTemp=fFalse;
@@ -511,7 +526,7 @@ void Wait_ms(int delay)
 	volatile int i;
 
 	while(delay > 0){
-		for(i = 0; i < 800; i++){
+		for(i = 0; i < 200; i++){
 			asm volatile("nop");
 		}
 		delay -= 1;
@@ -528,7 +543,6 @@ void Wait_sec(int sec){
 
 void GoToSleep(BOOL shortOrLong){
 		sei();
-//		PrintBone("Going to sleep...");
 		int sleepTime, sleepTicks = 0;
 		//If bool is true, we are in low power mode/backup, sleep for 60 seconds then check ADC again
 		if (shortOrLong){
@@ -544,15 +558,15 @@ void GoToSleep(BOOL shortOrLong){
 		SMCR |= (1 << SE);
 		
 		//Give time to registers
-		Wait_ms(10);
+		Wait_ms(1);
 		//Go to sleep
-		while (sleepTicks < sleepTime && flagGoToSleep){
+		while (sleepTicks < sleepTime){
 			asm volatile("SLEEP");
 			sleepTicks++;
 		} //endwhile
 		
 		//Give it time to power back on
-		Wait_ms(10);
+		Wait_ms(1);
 		
 		//Done sleeping, turn off sleeping led
 		prtSTATUSled |= (1 << bnSTATUSled);
@@ -562,16 +576,22 @@ void GoToSleep(BOOL shortOrLong){
 void TakeADC(){
 	WORD adcReading = 0;
 	
-	cli();
+	prtInterrupts |= (1 << bnBBint);
+	
+	__killCommINT();
 	//Turn Power on to ADC
 	PRR0 &= ~(1 << PRADC);	
 	ADMUX |= (1 << REFS1);	//internal 1.1V reference
 	ADCSRA |= (1 << ADEN)|(1 << ADPS2);			//clkIO/16
 	DIDR0 = 0xFE;								//disable all ADC's except ADC0
-	Wait_ms(5);									//Tim for registers to setup
+	Wait_ms(100);									//Tim for registers to setup
 	
+	//cli();
 	//Run conversion twice, throw first one out
 	for (int i = 0; i < 2; i++){ADCSRA |= (1 << ADSC); while (ADCSRA & (1 << ADSC));}	
+	
+	//Re-enable interrupts	
+	//sei();
 	
 	//Put conversion into buffer
 	adcReading = ADCL;
@@ -581,9 +601,6 @@ void TakeADC(){
 	globalADC=adcReading;
 	flagGoodVolts = (adcReading < LOW_BATT_ADC) ? fFalse : fTrue;
 		
-	//Re-enable interrupts
-	sei();
-	
 	//Disable ADC hardware/registers
 	ADCSRA = 0;
 	ADMUX = 0;
@@ -591,12 +608,14 @@ void TakeADC(){
 	
 	//Turn off power
 	PRR0 |= (1 << PRADC);
-	
+
 	char tempString[10];
 	itoa(globalADC,tempString,10);
 	tempString[9]='\0';
 	//PrintBone("ADC: ");
 	//PrintBone(tempString);
+	prtInterrupts &= ~(1 << bnBBint);
+	__enableCommINT();
 }
 
 /*************************************************************************************************************/
@@ -605,10 +624,10 @@ void GetTemp(){
 	WORD rawTemp = 0;
 	
 	//Power on temp monitor, let it settle
-	prtTEMPen |= (1 << bnTEMPen);
+	//__enableTemp();
 	PRR0 &= ~(1 << PRSPI);	
 	SPCR |= (1 << MSTR)|(1 << SPE)|(1 << SPR0);			//enables SPI, master, fck/64
-	//Wait_sec(1);
+	Wait_sec(2);
 	//Slave select goes low, sck goes low,  to signal start of transmission
 	prtSpi0 &= ~((1 << bnSck0)|(1 << bnSS0));
 	
@@ -632,7 +651,7 @@ void GetTemp(){
 	//Bring SS high, clear SPCR0 register and turn power off to SPI and device
 	prtSpi0 |= (1 << bnSS0)|(1 << bnSck0);
 	SPCR=0x00;	
-	prtTEMPen &= ~(1 << bnTEMPen);
+	//__killTemp();
 	PRR0 |= (1 << PRSPI);
 	
 	char tempString[9];
@@ -643,26 +662,25 @@ void GetTemp(){
 }
 /*************************************************************************************************************/
 void PowerUp(WORD interval){
-	sei();
 	__killCommINT();
 	
 	//First power on main regulator
 	__enableMain();
-	Wait_ms(interval);
+	Wait_sec(interval);
 	
 	//Power on BeagleBone next, takes longer time.
 	__enableBeagleBone();
-	Wait_ms(interval);
+	Wait_sec(interval);
 	//while (!(pinBBio & (1 << bnW0B9)));	//Wait for GPIO line to go high
 	
 	//Power on GAVR and Enable GPS
 	__enableGPSandGAVR();
-	Wait_ms(interval);
+	Wait_sec(interval);
 	//while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
 	
 	//Power on LCD
 	__enableLCD();
-	Wait_ms(interval);
+	Wait_sec(interval);
 	
 	__enableCommINT();
 	
@@ -670,7 +688,7 @@ void PowerUp(WORD interval){
 /*************************************************************************************************************/
 void PowerDown(){
 	__killCommINT();
-	sei();	//make sure this is okay.
+
 	//Signify interrupts, wait 6 seconds for all processing to stop.
 	prtInterrupts |= (1 << bnBBint)|(1 << bnGAVRint);
 	Wait_sec(6);
