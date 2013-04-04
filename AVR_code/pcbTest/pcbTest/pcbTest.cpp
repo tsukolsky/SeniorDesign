@@ -52,7 +52,7 @@ void killPower();
 /***********************************/
 uint16_t currentSecond=0;
 uint16_t globalADC=0;
-uint8_t flagKill=0;
+uint8_t flagKill;
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 ISR(TIMER2_OVF_vect){
@@ -141,6 +141,8 @@ void AppInit(unsigned int ubrr){
 	
 	//Show the WAVR that I have power and am operating
 	prtWAVRio |= (1 << bnG0W3);
+	
+	flagKill=0;
 	
 	sei();
 }

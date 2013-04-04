@@ -281,8 +281,9 @@ int main(void)
 	getDateTime_eeprom(fTrue,fTrue);
 	//Prep/make sure power/temp is good
 	Wait_sec(2);
-	GetTemp();
+	//GetTemp();
 	TakeADC();
+	flagGoodTemp=fTrue;
 	if (flagGoodVolts && flagGoodTemp){				//Good to power on system
 		__enableCommINT();
 		PowerUp(POWER_UP_INTERVAL);
@@ -682,7 +683,10 @@ void PowerUp(WORD interval){
 	__enableGPSandGAVR();
 	Wait_sec(interval);
 	//while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
-	if (!(pinGAVRio & (1 << bnW3G0))){prtInterrupts |= (1 << bnGAVRint); Wait_ms(200); prtInterrupts  &= ~(1 << bnGAVRint);}	//sends interrupt to come out of power-down, waits, goes forward.
+	//if (!(pinGAVRio & (1 << bnW3G0))){
+	prtInterrupts |= (1 << bnGAVRint);
+	Wait_ms(200); 
+	prtInterrupts  &= ~(1 << bnGAVRint);	//sends interrupt to come out of power-down, waits, goes forward.
 	
 	//Power on LCD
 	__enableLCD();
