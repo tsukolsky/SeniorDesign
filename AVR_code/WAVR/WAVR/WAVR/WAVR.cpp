@@ -78,6 +78,7 @@
 #include <string.h>
 #include <avr/io.h>
 #include <avr/eeprom.h>
+#include <util/delay.h>
 #include "stdtypes.h"		//holds standard type definitions
 #include "ATmegaXX4PA.h"	//holds bit definitions
 #include "myTime.h"			//myTime class, includes the myDate.h inherently
@@ -88,7 +89,7 @@
 using namespace std;
 
 //USART/BAUD defines
-#define FOSC				1000000			//1 MHz
+#define FOSC				8000000			//1 MHz
 #define ASY_OSC				32768			//32.768 kHz
 #define BAUD				9600
 #define MYUBRR FOSC/16/BAUD - 1				//declares baud rate
@@ -97,7 +98,7 @@ using namespace std;
 #define POWER_UP_INTERVAL	3
 
 //Declare timeout value
-#define COMM_TIMEOUT_SEC	6
+#define COMM_TIMEOUT_SEC	8
 #define STARTUP_TIMEOUT_SEC	40
 
 //Sleep and Run Timing constants
@@ -150,7 +151,7 @@ myTime currentTime;  //The clock, MUST BE GLOBAL. In final program, will initiat
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
 /*==============================================================================================================*/
-BOOL flagGoToSleep=fTrue, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaitingForReceiveGAVR;
+BOOL flagGoToSleep=fTrue, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaitingForReceiveGAVR, flagWaitingForSYNGAVR, flagWaitingForSYNBone;
 /* flagGoToSleep: go to sleep on end of while(fTrue) loop														*/
 /* flagUARTbone: receiving info from the bone																	*/
 /* flagNormalMode: normal mode of operation, take ADC and temp readings											*/
@@ -189,11 +190,12 @@ ISR(PCINT2_vect){
 	if ((PINC & (1 << PCINT17)) && !flagShutdown){
 		//Do work, correct interrupt
 		UCSR1B |= (1 << RXCIE1);
-		flagGoToSleep=fFalse;
+		//flagGoToSleep=fFalse;
 		flagNormalMode=fFalse;
+		flagWaitingForSYNGAVR=fTrue;
 		__killCommINT();
 		//Acknowledge
-		PrintGAVR("ACKG");
+		PrintGAVR("ACKG.");
 	}
 	sei();
 }	
@@ -202,12 +204,13 @@ ISR(PCINT2_vect){
 ISR(INT2_vect){	//about to get time, get things ready
 	cli();
 	if (!flagShutdown){		//If things are off, don't let noise do an interrupt. Shouldn't happen anyways.
-		UCSR0B |= (1 << RXCIE0);
 		flagGoToSleep=fFalse;	//no sleeping, wait for UART_RX
 		flagNormalMode=fFalse;
+		flagWaitingForSYNBone=fTrue;
 		__killCommINT();
 		//Acknowledge connection, disable INT2_vect
-		PrintBone("ACKT");
+		PrintBone("ACKB.");
+		UCSR0B |= (1 << RXCIE0);
 	}
 	sei();
 }
@@ -215,23 +218,32 @@ ISR(INT2_vect){	//about to get time, get things ready
 //UART Receive from BeagleBone
 ISR(USART0_RX_vect){
 	cli();
+	if (flagWaitingForSYNBone){
+		flagReceivingBone=fTrue;
+		flagWaitingForSYNBone=fFalse;
+	} else {
+		flagReceivingBone=fFalse;		//there was a timeout between the initial interrupt and when we are getting this.
+	}	
 	UCSR0B &= ~(1 << RXCIE0);
-	__killCommINT();				//make sure all interrupts are disabled that could cripple protocol
-	flagReceivingBone=fTrue;
 	sei();
 }
 /********************************************************/
 ISR(USART1_RX_vect){
 	cli();
+	if (flagWaitingForSYNGAVR){
+		flagReceivingGAVR=fTrue;
+		flagWaitingForSYNGAVR=fFalse;
+	} else {
+		flagReceivingGAVR=fFalse;
+	}
 	UCSR1B &= ~(1 <<RXCIE1);	//disable interrupt
-	__killCommINT();
-	flagReceivingGAVR=fTrue;
 	sei();
 }
 
 /********************************************************/
 //RTC Timer.
 ISR(TIMER2_OVF_vect){
+	cli();
 	prtSLEEPled ^= (1 << bnSLEEPled);
 	static int gavrSendTimeout=0, boneReceiveTimeout=0, gavrReceiveTimeout=0, startupTimeout=0;
 	
@@ -239,23 +251,22 @@ ISR(TIMER2_OVF_vect){
 	
 	//GAVR Transmission Timeout
 	if (flagSendingGAVR && gavrSendTimeout <=COMM_TIMEOUT_SEC){gavrSendTimeout++;}
-	else if (flagSendingGAVR && gavrSendTimeout > COMM_TIMEOUT_SEC){flagSendingGAVR=fFalse; gavrSendTimeout=0; __enableCommINT();}
+	else if (flagSendingGAVR && gavrSendTimeout > COMM_TIMEOUT_SEC){flagSendingGAVR=fFalse;flagGoToSleep=fTrue; gavrSendTimeout=0; __enableCommINT();}
 	else if (!flagSendingGAVR && gavrSendTimeout > 0){gavrSendTimeout=0;}
 	else;
 	
 	//BeagleBone Reception Timeout
-	if (flagReceivingBone && boneReceiveTimeout <=COMM_TIMEOUT_SEC){boneReceiveTimeout++;}
-	else if (flagReceivingBone && boneReceiveTimeout > COMM_TIMEOUT_SEC){flagReceivingBone=fFalse; boneReceiveTimeout=0; __enableCommINT();}
-	else if (!flagReceivingBone && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
+	if ((flagReceivingBone|| flagWaitingForSYNBone) && (boneReceiveTimeout <=COMM_TIMEOUT_SEC)){boneReceiveTimeout++;}
+	else if ((flagReceivingBone|| flagWaitingForSYNBone) && (boneReceiveTimeout > COMM_TIMEOUT_SEC)){flagReceivingBone=fFalse; flagWaitingForSYNBone=fFalse;flagGoToSleep=fTrue; flagNormalMode=fTrue; boneReceiveTimeout=0; __enableCommINT();}
+	else if ((!flagReceivingBone && !flagWaitingForSYNBone) && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
 	else;
-	
+
 	//GAVR Reception Timeout
-	if (flagReceivingGAVR && gavrReceiveTimeout <= COMM_TIMEOUT_SEC){gavrReceiveTimeout++;}
-	else if (flagReceivingGAVR && gavrReceiveTimeout > COMM_TIMEOUT_SEC){flagReceivingGAVR=fFalse; boneReceiveTimeout=0; __enableCommINT();}
-	else if (!flagReceivingGAVR && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
+	if ((flagReceivingGAVR || flagWaitingForSYNGAVR) && gavrReceiveTimeout <= COMM_TIMEOUT_SEC){gavrReceiveTimeout++;}
+	else if ((flagReceivingGAVR || flagWaitingForSYNGAVR) && gavrReceiveTimeout > COMM_TIMEOUT_SEC){flagReceivingGAVR=fFalse;flagGoToSleep=fTrue; flagWaitingForSYNGAVR=fFalse;flagNormalMode=fTrue;boneReceiveTimeout=0; __enableCommINT();}
+	else if ((!flagReceivingGAVR && !flagWaitingForSYNGAVR) && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
 	else;
-	
-/*
+
 	//Startup Tiemout for sending clock to GAVR
 	if ((flagFreshStart || restart) && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
 	else if ((flagFreshStart || restart) && startupTimeout > STARTUP_TIMEOUT_SEC){
@@ -263,8 +274,11 @@ ISR(TIMER2_OVF_vect){
 		else if (restart){restart=fFalse; flagUserClock=fFalse; flagUpdateGAVRClock=fTrue;}				//Gps didn't send valid data, we have valid data. This is redundant to the main
 		__enableCommINT();																				//--procedure that depends on "if (restart)"
 		startupTimeout=0;
+		flagGoToSleep=fTrue;
+		flagNormalMode=fTrue;
 	} else if (!(flagFreshStart || restart) && startupTimeout > 0){startupTimeout=0;}
-	else;*/
+	else;
+	sei();
 }//End timer 2 overflow.
 
 
@@ -280,7 +294,7 @@ int main(void)
 	InitBools();
 	getDateTime_eeprom(fTrue,fTrue);
 	//Prep/make sure power/temp is good
-	Wait_sec(2);
+	Wait_ms(2000);
 	//GetTemp();
 	TakeADC();
 	flagGoodTemp=fTrue;
@@ -295,22 +309,17 @@ int main(void)
 		flagFreshStart=fFalse;
 	}
 	
-	PrintBone("Hello BeagleBone.");	
-	printTimeDate(fTrue,fTrue);
 	prtSTATUSled |= (1 << bnSTATUSled);
 	//main programming loop
-	unsigned int counter=0;
 	while(fTrue)
 	{		
-		
+		Wait_ms(2000);
 		//If receiving UART string, go get rest of it.
 		if (flagReceivingBone){
-			//ReceiveBone();
+			ReceiveBone();
 			__enableCommINT();
-			if (!flagReceivingGAVR){		//Just in case there was an interrupt IMMEDIATELY after the enabling of Communication interrupts
-				flagGoToSleep=fTrue;
-				flagNormalMode=fTrue;
-			}			
+			flagGoToSleep=fTrue;
+			flagNormalMode=fTrue;
 		}//end flag Receiving from Bone 
 		
 		//Receiving Data/Signals from GAVR
@@ -341,13 +350,12 @@ int main(void)
 				}	
 			}						
 		}//end time capture/save
-		
+
 		//Take ADC reading to check battery level, temp to check board temperature.
-		if (flagNormalMode && counter < 3){
+		if (flagNormalMode){
 			TakeADC();
-			GetTemp();
-			counter++;
-			
+			//GetTemp();
+			flagGoodTemp=fTrue;
 			//If both are good & shutdown is low, keep it low. If shutdown is high, pull low and enable restart
 			if (flagGoodVolts && flagGoodTemp){
 				if(flagShutdown){restart = fTrue; flagShutdown=fFalse;}
@@ -359,10 +367,9 @@ int main(void)
 				}
 			}
 		}//end normal mode Check Analog Signals		
-		else if (counter >=3 && flagNormalMode){counter=0; flagNewShutdown=fTrue; flagShutdown=fTrue;}		//forces a shutdown for at least one cycle, see how the thing reacts.
 		
 		//Waiting...
-		Wait_sec(4);
+		//Wait_sec(1);
 				
 		//About to shutdown, save EEPROM
 		if (flagNewShutdown){
@@ -384,7 +391,7 @@ int main(void)
 			PowerUp(POWER_UP_INTERVAL);
 			__enableCommINT();
 			//Update the GAVRClock since it's a restart, we have the correct date and time. If BeagleBone sends GPS data, use that to back it up.
-			//flagUpdateGAVRClock=fTrue;
+			flagUpdateGAVRClock=fTrue;
 			flagUserClock=fFalse;	
 			restart=fFalse;	
 		}//end restart		
@@ -493,6 +500,8 @@ void InitBools(){
 	flagNormalMode=fTrue;
 	flagReceivingGAVR=fFalse;
 	flagWaitingForReceiveGAVR=fFalse;
+	flagWaitingForSYNGAVR=fFalse;
+	flagWaitingForSYNBone=fFalse;
 
 	flagUpdateGAVRClock=fFalse;
 	flagSendingGAVR=fFalse;
@@ -628,9 +637,9 @@ void TakeADC(){
 
 void GetTemp(){
 	WORD rawTemp = 0;
-	
-	//Power on temp monitor, let it settle
-	//__enableTemp();
+
+	__killCommINT();
+
 	PRR0 &= ~(1 << PRSPI);	
 	SPCR |= (1 << MSTR)|(1 << SPE)|(1 << SPR0);			//enables SPI, master, fck/64
 	Wait_sec(2);
@@ -663,8 +672,8 @@ void GetTemp(){
 	char tempString[9];
 	itoa(globalTemp,tempString,10);
 	tempString[8]='\0';
-	//PrintBone("TEMP:");
-	//PrintBone(tempString);
+
+	__enableCommINT();
 }
 /*************************************************************************************************************/
 void PowerUp(WORD interval){
@@ -675,21 +684,21 @@ void PowerUp(WORD interval){
 	Wait_sec(interval);
 	
 	//Power on BeagleBone next, takes longer time.
-	__enableBeagleBone();
-	Wait_sec(interval);
+	//__enableBeagleBone();
+	//Wait_sec(interval);
 	//while (!(pinBBio & (1 << bnW0B9)));	//Wait for GPIO line to go high
 	
 	//Power on GAVR and Enable GPS
 	__enableGPSandGAVR();
-	Wait_sec(interval);
+	//Wait_sec(interval);
 	//while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
-	//if (!(pinGAVRio & (1 << bnW3G0))){
-	prtInterrupts |= (1 << bnGAVRint);
-	Wait_ms(200); 
-	prtInterrupts  &= ~(1 << bnGAVRint);	//sends interrupt to come out of power-down, waits, goes forward.
-	
+	if (restart){
+		prtInterrupts |= (1 << bnGAVRint);
+		Wait_ms(200); 
+		prtInterrupts  &= ~(1 << bnGAVRint);	//sends interrupt to come out of power-down, waits, goes forward.
+	}
 	//Power on LCD
-	__enableLCD();
+	//__enableLCD();
 	Wait_sec(interval);
 	
 	__enableCommINT();

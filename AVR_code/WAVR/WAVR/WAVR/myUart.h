@@ -60,6 +60,7 @@ void PrintBone(char string[]){
 	
 	while (string[i]){
 		PutUartChBone(string[i++]);
+		_delay_ms(200);
 	}
 }
 /*************************************************************************************************************/
@@ -74,6 +75,7 @@ void PrintGAVR(char string[]){
 	BYTE i=0;
 	while (string[i]){
 		PutUartChGAVR(string[i++]);
+		_delay_ms(200);
 	}
 }
 /*************************************************************************************************************/
@@ -158,9 +160,8 @@ void sendGAVR(){
 				} else;	//end if-else (what we are doing).
 							
 				//Reset the recString to receive the next ACK.
-				for (int i=0; i<strLoc; i++){
-					recString[i]=NULL;
-				}
+				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
+					
 				//Reset the carriage feature, string location and go back to the receiving state.
 				noCarriage=fTrue;
 				strLoc=0;
@@ -175,6 +176,7 @@ void sendGAVR(){
 				}//end case 4	
 			case 5:{
 				//Successful communications overall
+				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 				flagSendingGAVR=fFalse;
 				flagWaitingToSendGAVR=fFalse;
 				flagTimeout=fFalse;
@@ -193,6 +195,7 @@ void sendGAVR(){
 				flagWaitingToSendGAVR=fTrue;
 				flagSendingGAVR=fFalse;
 				flagTimeout=fFalse;
+				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 				state=0;
 				break;
 				}//end case 7
@@ -215,9 +218,9 @@ void sendGAVR(){
 	
 /*************************************************************************************************************/
 void ReceiveBone(){
-	volatile static unsigned int state=0;
+	unsigned int state=0;
 	char recChar, recString[40];
-	volatile unsigned int strLoc=0;
+	unsigned int strLoc=0;
 	BOOL noCarriage=fTrue;
 	
 	while (flagReceivingBone){
@@ -247,12 +250,12 @@ void ReceiveBone(){
 					}//end case 0
 				case 1:{
 					while (noCarriage && flagReceivingBone){	//while there isn't a timeout and no carry
-						while (!(UCSR0A & (1 << RXC0)) && flagReceivingBone);		//get the next character
-						if (!flagReceivingBone){state=0; break;}					//if there was a timeout, break out and reset state
+						while ((!(UCSR0A & (1 << RXC0))) && flagReceivingBone);		//get the next character
+						if (!flagReceivingBone){state=6;}					//if there was a timeout, break out and reset state
 						recChar=UDR0;
 						recString[strLoc++]=recChar;
 						if (recChar == '.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
-						else if (strLoc >= 19){state=5;noCarriage=fFalse;}
+						else if (strLoc >= 39){state=5;noCarriage=fFalse;}
 						else; //end if-elseif-else
 					}//end while
 					break;
@@ -278,12 +281,14 @@ void ReceiveBone(){
 					PrintBone(recString);
 					state=0;
 					flagReceivingBone=fFalse;
+					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					break;
 					}//end case 3
 				case 4:{
 					//Bad time string.
 					PrintBone("ACKBAD.");
 					flagReceivingBone=fFalse;
+					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					state=0;
 					break;
 					}//end case 4
@@ -291,12 +296,14 @@ void ReceiveBone(){
 					//Didn't get a good ack or there was an error.
 					PrintBone("ACKERROR.");
 					flagReceivingBone=fFalse;
+					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					state=0;
 					break;
 					}//end case 5
 				case 6:{
 					//Graceful exit.
 					flagReceivingBone=fFalse;
+					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					state=0;
 					break;
 					}//end case 6
@@ -304,7 +311,7 @@ void ReceiveBone(){
 					//Parse the string
 					//Go through the string and parse for the time. Must go through the time to get the date.
 					BOOL successTime=fFalse, successDate=fFalse;			//whether or not we have successfully parsed string
-					int counter=0;
+					int counter=3;
 					int tempNum[3]={0,0,0}, tempNum1[3]={0,0,0},dmy=0, hms=0, placement=0;
 					char tempStringNum[5];
 					
@@ -373,7 +380,7 @@ void ReceiveBone(){
 						flagUpdateGAVRClock=fTrue;
 						flagUserClock=fFalse;
 						state=4;	//ACKBAD
-					} else if (!(successDate && successTime) && flagFreshStart){
+					} else if (!(successDate && successTime) && flagFreshStart && !restart){
 						flagUserClock=fTrue;
 						flagUpdateGAVRClock=fFalse;
 						state=4;	//ACKBAD
@@ -391,9 +398,9 @@ void ReceiveBone(){
 
 /*************************************************************************************************************/
 void ReceiveGAVR(){
-	volatile static unsigned int state=0;
+	unsigned int state=0;
 	char recChar, recString[40];
-	volatile unsigned int strLoc=0;
+	unsigned int strLoc=0;
 	BOOL noCarriage=fTrue;
 	
 	//While Loop
@@ -554,6 +561,7 @@ void ReceiveGAVR(){
 				}//end case 4
 				case 5:{
 					//Exit case
+					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					flagReceivingGAVR=fFalse;
 					state=0;		//just in case
 					break;

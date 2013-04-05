@@ -39,6 +39,8 @@
 |				  working on EEPROM trip logic.
 |			4/2-  Started integrating everything into PCB module. Integrated Speed and HR, got compilation.
 |				  Going to test pcbTest kill workings, then test WAVR sending ability, then WAVR->GAVR.
+|			4/3-  Started working on commuincation with WAVR. Interrupt reads, not goign into the receive
+|				  function thoguh meaning the WAVR isn't getting our ACKW.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -69,8 +71,8 @@ using namespace std;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <avr/io.h>
 #include <avr/eeprom.h>
+#include <util/delay.h>
 #include "stdtypes.h"		//holds standard type definitions
 #include "myTime.h"			//myTime class, includes the myDate.h inherently
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
@@ -116,8 +118,7 @@ using namespace std;
 void DeviceInit();
 void AppInit(unsigned int ubrr);
 void EnableRTCTimer();
-void Wait_ms(volatile int delay);
-void Wait_sec(volatile int delay);
+void Wait_sec(unsigned int delay);
 void initHRSensing();
 void initSpeedSensing();
 WORD GetADC();
@@ -164,29 +165,40 @@ unsigned int HRSAMPLES[300];
 //ISR for beaglebone uart input
 ISR(USART0_RX_vect){
 	cli();
-	flagWaitingForBone=fFalse;
+	if (flagWaitingForBone){
+		flagWaitingForBone=fFalse;
+		flagReceiveBone=fTrue;
+	} else {
+		flagReceiveBone=fFalse;
+	}
 	UCSR0B &= ~(1 << RXCIE0);
-	flagReceiveBone=fTrue;
 	sei();
 }
 /************************************************************************/
 //ISR for WAVR uart input.
 ISR(USART1_RX_vect){
 	cli();
-	flagWaitingForWAVR=fFalse;
+	if (flagWaitingForWAVR){
+		flagWaitingForWAVR=fFalse;
+		flagReceiveWAVR=fTrue;
+	} else {
+		flagReceiveWAVR=fFalse;
+	}
 	UCSR1B &= ~(1 << RXCIE1);	//clear interrupt. Set UART flag
-	flagReceiveWAVR=fTrue;
 	sei();
 }
 /************************************************************************/
 //INT0, getting something from the watchdog
 ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over.
 	cli();
+	prtDEBUGled|= (1 << bnDBG4);
 	flagWaitingForWAVR=fTrue;
 	UCSR1B |= (1 << RXCIE1);
 	__killCommINT();
 	//Wait for UART0 signal now, otherwise do nothing
-	PrintBone("ACKW");			//ACK grom GAVR
+	PrintBone("ACKW.");			//ACK grom GAVR
+	_delay_ms(500);
+	prtDEBUGled &= ~(1 << bnDBG4);
 	sei();
 }
 /************************************************************************/
@@ -196,7 +208,7 @@ ISR(INT1_vect){
 	flagWaitingForBone=fTrue;
 	UCSR0B |= (1 << RXCIE0);	//enable receiver 1
 	__killCommINT();
-	PrintWAVR("ACKB");			//Ack from GAVR
+	PrintWAVR("ACKB.");			//Ack from GAVR
 	sei();
 }
 /************************************************************************/
@@ -207,7 +219,7 @@ ISR(INT6_vect){
 	unsigned int value=TCNT1;
 	
 	prtDEBUGled |= (1 << bnDBG1);
-	Wait_ms(10);
+	_delay_ms(250);
 	if (flagNoSpeed){
 		flagNoSpeed=fFalse;
 		globalTrip.resetSpeedPoints();
@@ -257,7 +269,8 @@ ISR(TIMER1_OVF_vect){
 /************************************************************************/
 ISR(TIMER2_OVF_vect){
 	volatile static int WAVRtimeout=0, BONEtimeout=0, startupTimeout=0, sendingWAVRtimeout=0;
-	//pinSTATUSled2 |= (1 << bnSTATUSled2);
+	prtDEBUGled2 ^= (1 << bnDBG10);
+	
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
 	//Timeout functionality
@@ -303,16 +316,16 @@ int main(void)
 	AppInit(MYUBRR);	//initializes pins for our setting
 	EnableRTCTimer();	//RTC
 	getDateTime_eeprom(fTrue,fTrue);	//Get last saved date and time.
-	initSpeedSensing();
-	initHRSensing();
+//	initSpeedSensing();
+//	initHRSensing();
 	sei();
     while(fTrue)
     {	
 		//Receiving from WAVR. Either a time string or asking user to set date/time/both.
 		if (flagReceiveWAVR && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG9);		//second from bottom, next to RTC...
-			Wait_ms(1000);
-			//ReceiveWAVR();
+			_delay_ms(1500);
+			ReceiveWAVR();
 			__enableCommINT();
 			prtDEBUGled2 &= ~(1 << bnDBG9);
 		}
@@ -320,17 +333,18 @@ int main(void)
 		//Receiving from the Bone. Could be a number of things. Needs to implement a state machine.
 		if (flagReceiveBone && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
-			Wait_ms(1000);
+			_delay_ms(1500);
 			//ReceiveBone();
 			prtDEBUGled2 &= ~(1 << bnDBG8);	
 			__enableCommINT();
-		}			
+		}		
+			
 		
 		//Send either "I need the date or time" or "Here is the date and time you asked for. If we are still waiting for WAVR, then don't send anything.
 		if ((flagGetWAVRtime || flagUpdateWAVRtime) && !flagWaitingForWAVR && !flagQUIT){
 			prtDEBUGled |= (1 << bnDBG2);		//third from top.
 			__killCommINT();
-			Wait_ms(1000);
+			_delay_ms(1500);
 			//SendWAVR();
 			prtDEBUGled &= ~(1 << bnDBG2);	
 			__enableCommINT();
@@ -344,12 +358,12 @@ int main(void)
 			if (valid){flagUpdateWAVRtime=fTrue; flagWAVRtime=fFalse; flagGetWAVRtime=fFalse;}				//SendWAVR() will set the flags down accordingly
 			else {flagSendWAVR=fFalse;}
 		}			
-		
+				
 		if (flagQUIT){
 			//Show that we know we are supposed to quit
 			cli();
 			prtDEBUGled |= (1 << bnDBG0);
-			Wait_ms(1000);
+			_delay_ms(1500);
 			prtDEBUGled = 0x00;
 			prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
 			prtWAVRio &= ~(1 << bnG0W3);
@@ -363,7 +377,7 @@ int main(void)
 		}		
 		
 		if (flagInvalidDateTime){
-			//flagGetWAVRtime=fTrue;
+			flagGetWAVRtime=fTrue;
 		}						
     }//end while
 }//end main
@@ -416,14 +430,14 @@ void AppInit(unsigned int ubrr){
 	//Enable LEDs
 	ddrDEBUGled = 0xFF;	//all outputs
 	prtDEBUGled = 0x00;	//all low
-	ddrDEBUGled2 &= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
+	ddrDEBUGled2 |= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
 	prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
 	
 	//Disable power to all peripherals
 	PRR0 |= (1 << PRTWI)|(1 << PRTIM1)|(1 << PRTIM0)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
-	//Set up Pin Change interrupts
-	EICRA |= (1 << ISC01)|(1 << ISC00)|(1 << ISC11)|(1 << ISC10);			//rising edge of INT0 and INT1 enables interrupt
+	//Set up interrupts
+	EICRA = (1 << ISC01)|(1 << ISC00)|(1 << ISC11)|(1 << ISC10);			//rising edge of INT0 and INT1 enables interrupt
 	EICRB = (1  << ISC61)|(1 << ISC60)|(1 << ISC71)|(1 << ISC70);			//rising edge of INT7 and INT6 enables interrupt
 	__killCommINT();
 	__killSpeedINT();
@@ -453,7 +467,7 @@ void EnableRTCTimer(){
 	//Asynchronous should be done based on TOSC1 and TOSC2
 	//Give power back to Timer2
 	PRR0 &= ~(1 << PRTIM2);
-	Wait_ms(1);	//give it time to power on
+	_delay_ms(2);	//give it time to power on
 	
 	//Set to Asynchronous mode, uses TOSC1/TOSC2 pins
 	ASSR |= (1 << AS2);
@@ -466,20 +480,9 @@ void EnableRTCTimer(){
 	
 	//Away we go
 }
-/*************************************************************************************************************/
-void Wait_ms(volatile int delay)
-{
-	volatile int i;
 
-	while(delay > 0){
-		for(i = 0; i < 800; i++){
-			asm volatile("nop");
-		}
-		delay -= 1;
-	}
-}
 /*************************************************************************************************************/
-void Wait_sec(volatile int delay){
+void Wait_sec(unsigned int delay){
 	volatile int startingTime = currentTime.getSeconds();
 	volatile int endingTime= (startingTime+delay)%60;
 	while (currentTime.getSeconds() != endingTime){asm volatile ("nop");}

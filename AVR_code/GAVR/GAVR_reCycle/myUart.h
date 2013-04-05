@@ -45,6 +45,7 @@ void PrintBone(char string[]){
 	
 	while (string[i]){
 		PutUartChBone(string[i++]);
+		_delay_ms(400);
 	}
 }
 /*************************************************************************************************************/
@@ -59,6 +60,7 @@ void PrintWAVR(char string[]){
 	BYTE i=0;
 	while (string[i]){
 		PutUartChWAVR(string[i++]);
+		_delay_ms(400);
 	}
 }
 /*************************************************************************************************************/
@@ -98,6 +100,7 @@ void ReceiveWAVR(){
 			break;
 			}
 		case 1: {
+			_delay_ms(100);
 			while (noCarriage && flagReceiveWAVR){
 				while (!(UCSR1A & (1 << RXC1)) && flagReceiveWAVR);	//wait for this sucker to come in
 				if (!flagReceiveWAVR){state=0; break;}				//there was a timeout in that receive of character
@@ -204,11 +207,13 @@ void ReceiveWAVR(){
 			state=0;
 			//Do anythingi extra here for a reset.
 			flagReceiveWAVR=fFalse;
+			for (int i=0; i<=strLoc; i++){recString[i]=NULL;}
 		}
 		case 5:{
 			//ACKBAD case
 			PrintWAVR("ACKBAD.");
 			flagReceiveWAVR=fFalse;
+			for (int i=0; i<=strLoc; i++){recString[i]=NULL;}
 			state=0;
 		}
 		default: {state=0; flagReceiveWAVR=fFalse; break;}
@@ -254,8 +259,9 @@ void SendWAVR(){
 			case 0:{
 				//Raise Interrupts
 				prtWAVRINT |= (1 << bnWAVRINT);
-				for (int i=0; i<2; i++){asm volatile("nop");}
+				for (int i=0; i<4; i++){asm volatile("nop");}
 				prtWAVRINT &= ~ (1 << bnWAVRINT);
+				_delay_ms(200);
 				state=1;
 				break;
 				}//end case 0			
@@ -321,12 +327,14 @@ void SendWAVR(){
 				//ACKERROR or timeout, just exit and try again without resetting flags. Same as case 6...
 				state=0;
 				flagSendWAVR=fFalse;
+				for (int i=0; i<=strLoc; i++){recString[i]=NULL;}
 				break;
 				}//end case  5
 			case 6:{
 				//Graceful exit
 				state=0; 
 				flagSendWAVR=fFalse;
+				for (int i=0; i<=strLoc; i++){recString[i]=NULL;}
 				break;
 				}//end case 6
 			default:{state=0; flagSendWAVR=fFalse; break;}
