@@ -45,7 +45,7 @@ void PrintBone(char string[]){
 	
 	while (string[i]){
 		PutUartChBone(string[i++]);
-		_delay_ms(400);
+		_delay_ms(50);
 	}
 }
 /*************************************************************************************************************/
@@ -60,7 +60,7 @@ void PrintWAVR(char string[]){
 	BYTE i=0;
 	while (string[i]){
 		PutUartChWAVR(string[i++]);
-		_delay_ms(400);
+		_delay_ms(50);
 	}
 }
 /*************************************************************************************************************/
@@ -93,6 +93,8 @@ void ReceiveWAVR(){
 		/************************************************************************************************************************************************/
 	switch (state){
 		case 0: {
+			PrintWAVR("ACKW.");
+			_delay_ms(2000);
 			strLoc=0;
 			recChar=UDR1;
 			if (recChar=='.'){PrintWAVR("ACKERROR.");state=4;}
@@ -100,7 +102,6 @@ void ReceiveWAVR(){
 			break;
 			}
 		case 1: {
-			_delay_ms(100);
 			while (noCarriage && flagReceiveWAVR){
 				while (!(UCSR1A & (1 << RXC1)) && flagReceiveWAVR);	//wait for this sucker to come in
 				if (!flagReceiveWAVR){state=0; break;}				//there was a timeout in that receive of character
@@ -113,6 +114,7 @@ void ReceiveWAVR(){
 			break;
 			}//end case 1
 		case 2: {
+			_delay_ms(500);
 			if (!strncmp(recString,"SYNDONE.",8)){state=4;}
 			else if (!strncmp(recString,"SYNGB.",6)){
 				state=4; 
@@ -211,6 +213,7 @@ void ReceiveWAVR(){
 		}
 		case 5:{
 			//ACKBAD case
+			_delay_ms(1000);
 			PrintWAVR("ACKBAD.");
 			flagReceiveWAVR=fFalse;
 			for (int i=0; i<=strLoc; i++){recString[i]=NULL;}

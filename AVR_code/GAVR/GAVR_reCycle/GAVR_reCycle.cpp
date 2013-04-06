@@ -83,14 +83,14 @@ using namespace std;
 /*****************************************/
 /**			UART Frequency/BAUD			**/
 /*****************************************/
-#define FOSC 16000000
+#define FOSC 8000000
 #define BAUD 9600
 #define MYUBRR FOSC/16/BAUD -1	//declares Baud Rate for UART
 
 /*****************************************/
 /**			TIMEOUT DEFINITIONS			**/
 /*****************************************/
-#define COMM_TIMEOUT_SEC 5
+#define COMM_TIMEOUT_SEC 8
 #define STARTUP_TIMEOUT_SEC 40
 
 /*****************************************/
@@ -122,7 +122,7 @@ void Wait_sec(unsigned int delay);
 void initHRSensing();
 void initSpeedSensing();
 WORD GetADC();
-
+void Wait_ms(unsigned int delay);
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
 /*==============================================================================================================*/
@@ -178,6 +178,7 @@ ISR(USART0_RX_vect){
 //ISR for WAVR uart input.
 ISR(USART1_RX_vect){
 	cli();
+	prtDEBUGled |= (1 << bnDBG5);
 	if (flagWaitingForWAVR){
 		flagWaitingForWAVR=fFalse;
 		flagReceiveWAVR=fTrue;
@@ -185,6 +186,8 @@ ISR(USART1_RX_vect){
 		flagReceiveWAVR=fFalse;
 	}
 	UCSR1B &= ~(1 << RXCIE1);	//clear interrupt. Set UART flag
+	Wait_sec(1);
+	prtDEBUGled &= ~(1 << bnDBG5);
 	sei();
 }
 /************************************************************************/
@@ -192,12 +195,13 @@ ISR(USART1_RX_vect){
 ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over.
 	cli();
 	prtDEBUGled|= (1 << bnDBG4);
-	flagWaitingForWAVR=fTrue;
-	UCSR1B |= (1 << RXCIE1);
+	//flagWaitingForWAVR=fTrue;
+	flagReceiveWAVR=fTrue;
+	//UCSR1B |= (1 << RXCIE1);
 	__killCommINT();
+	Wait_ms(500);
 	//Wait for UART0 signal now, otherwise do nothing
-	PrintBone("ACKW.");			//ACK grom GAVR
-	_delay_ms(500);
+	//PrintWAVR("ACKW.");			//ACK grom GAVR
 	prtDEBUGled &= ~(1 << bnDBG4);
 	sei();
 }
@@ -208,7 +212,7 @@ ISR(INT1_vect){
 	flagWaitingForBone=fTrue;
 	UCSR0B |= (1 << RXCIE0);	//enable receiver 1
 	__killCommINT();
-	PrintWAVR("ACKB.");			//Ack from GAVR
+	PrintBone("ACKB.");			//Ack from GAVR
 	sei();
 }
 /************************************************************************/
@@ -324,16 +328,20 @@ int main(void)
 		//Receiving from WAVR. Either a time string or asking user to set date/time/both.
 		if (flagReceiveWAVR && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG9);		//second from bottom, next to RTC...
-			_delay_ms(1500);
+			Wait_ms(500);
 			ReceiveWAVR();
 			__enableCommINT();
 			prtDEBUGled2 &= ~(1 << bnDBG9);
 		}
 		
+		prtDEBUGled2 |= (1 << bnDBG8);
+		Wait_sec(1);
+		prtDEBUGled2 &= ~(1 << bnDBG8);
+		Wait_sec(1);
 		//Receiving from the Bone. Could be a number of things. Needs to implement a state machine.
 		if (flagReceiveBone && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
-			_delay_ms(1500);
+			Wait_ms(500);
 			//ReceiveBone();
 			prtDEBUGled2 &= ~(1 << bnDBG8);	
 			__enableCommINT();
@@ -344,7 +352,7 @@ int main(void)
 		if ((flagGetWAVRtime || flagUpdateWAVRtime) && !flagWaitingForWAVR && !flagQUIT){
 			prtDEBUGled |= (1 << bnDBG2);		//third from top.
 			__killCommINT();
-			_delay_ms(1500);
+			Wait_ms(500);
 			//SendWAVR();
 			prtDEBUGled &= ~(1 << bnDBG2);	
 			__enableCommINT();
@@ -354,6 +362,9 @@ int main(void)
 		if (flagGetUserClock && !flagWaitingForWAVR && !flagQUIT){
 			//Get the time and date from the user
 			//if time/date valid, set, save,send
+			prtDEBUGled |= (1 << bnDBG7);
+			Wait_sec(3);
+			prtDEBUGled &= ~(1 << bnDBG7);
 			BOOL valid=fFalse;
 			if (valid){flagUpdateWAVRtime=fTrue; flagWAVRtime=fFalse; flagGetWAVRtime=fFalse;}				//SendWAVR() will set the flags down accordingly
 			else {flagSendWAVR=fFalse;}
@@ -363,7 +374,7 @@ int main(void)
 			//Show that we know we are supposed to quit
 			cli();
 			prtDEBUGled |= (1 << bnDBG0);
-			_delay_ms(1500);
+			Wait_ms(500);
 			prtDEBUGled = 0x00;
 			prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
 			prtWAVRio &= ~(1 << bnG0W3);
@@ -482,6 +493,18 @@ void EnableRTCTimer(){
 }
 
 /*************************************************************************************************************/
+void Wait_ms(unsigned int delay)
+{
+	volatile int i;
+
+	while(delay > 0){
+		for(i = 0; i < 200; i++){
+			asm volatile("nop");
+		}
+		delay -= 1;
+	}
+}
+/************************************************************************************************************/
 void Wait_sec(unsigned int delay){
 	volatile int startingTime = currentTime.getSeconds();
 	volatile int endingTime= (startingTime+delay)%60;

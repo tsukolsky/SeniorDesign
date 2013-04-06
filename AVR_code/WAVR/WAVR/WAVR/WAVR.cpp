@@ -99,7 +99,7 @@ using namespace std;
 
 //Declare timeout value
 #define COMM_TIMEOUT_SEC	8
-#define STARTUP_TIMEOUT_SEC	40
+#define STARTUP_TIMEOUT_SEC	12
 
 //Sleep and Run Timing constants
 #define SLEEP_TICKS_HIGHV	10				//sleeps for 20 seconds when battery is good to go
@@ -190,7 +190,7 @@ ISR(PCINT2_vect){
 	if ((PINC & (1 << PCINT17)) && !flagShutdown){
 		//Do work, correct interrupt
 		UCSR1B |= (1 << RXCIE1);
-		//flagGoToSleep=fFalse;
+		flagGoToSleep=fFalse;
 		flagNormalMode=fFalse;
 		flagWaitingForSYNGAVR=fTrue;
 		__killCommINT();
@@ -233,9 +233,10 @@ ISR(USART1_RX_vect){
 	if (flagWaitingForSYNGAVR){
 		flagReceivingGAVR=fTrue;
 		flagWaitingForSYNGAVR=fFalse;
-	} else {
+	}else {
 		flagReceivingGAVR=fFalse;
 	}
+	
 	UCSR1B &= ~(1 <<RXCIE1);	//disable interrupt
 	sei();
 }
@@ -440,7 +441,7 @@ void AppInit(unsigned int ubrr){
 	
 	//Set BAUD for UART1
 	UBRR1L = ubrr;
-	UBRR0H = (ubrr >> 8);
+	UBRR1H = (ubrr >> 8);
 	//UCSR1A |= (1 << U2X1);
 	
 	//Enable UART_TX1 and UART_RX1
@@ -450,7 +451,7 @@ void AppInit(unsigned int ubrr){
 	__killUARTrec();
 	
 	//Disable power to all peripherals
-	PRR0 |= (1 << PRTWI)|(1 << PRTIM0)|(1 << PRUSART1)|(1 << PRTIM1)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
+	PRR0 |= (1 << PRTWI)|(1 << PRTIM0)|(1 << PRTIM1)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
 	//Enable status LEDs
 	ddrSLEEPled |= (1 << bnSLEEPled);
