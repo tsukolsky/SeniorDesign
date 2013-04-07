@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 4/2/13
+| Last Revised: 4/6/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -41,6 +41,8 @@
 |				  Going to test pcbTest kill workings, then test WAVR sending ability, then WAVR->GAVR.
 |			4/3-  Started working on commuincation with WAVR. Interrupt reads, not goign into the receive
 |				  function thoguh meaning the WAVR isn't getting our ACKW.
+|			4/5-4/6- Working on UART cleaning/transmission protocols. See "../../WAVR/WAVR/WAVR/myUart.h" and 
+|				  "../../WAVR/WAVR/WAVR/WAVR.cpp" for more information. Not going to double the comments.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -122,7 +124,7 @@ void Wait_sec(unsigned int delay);
 void initHRSensing();
 void initSpeedSensing();
 WORD GetADC();
-void Wait_ms(unsigned int delay);
+
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
 /*==============================================================================================================*/
@@ -178,7 +180,6 @@ ISR(USART0_RX_vect){
 //ISR for WAVR uart input.
 ISR(USART1_RX_vect){
 	cli();
-	prtDEBUGled |= (1 << bnDBG5);
 	if (flagWaitingForWAVR){
 		flagWaitingForWAVR=fFalse;
 		flagReceiveWAVR=fTrue;
@@ -186,8 +187,6 @@ ISR(USART1_RX_vect){
 		flagReceiveWAVR=fFalse;
 	}
 	UCSR1B &= ~(1 << RXCIE1);	//clear interrupt. Set UART flag
-	Wait_sec(1);
-	prtDEBUGled &= ~(1 << bnDBG5);
 	sei();
 }
 /************************************************************************/
@@ -195,13 +194,12 @@ ISR(USART1_RX_vect){
 ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over.
 	cli();
 	prtDEBUGled|= (1 << bnDBG4);
-	//flagWaitingForWAVR=fTrue;
-	flagReceiveWAVR=fTrue;
-	//UCSR1B |= (1 << RXCIE1);
+	flagWaitingForWAVR=fTrue;
+	UCSR1B |= (1 << RXCIE1);
 	__killCommINT();
-	Wait_ms(500);
+	char dummy=UDR1;
 	//Wait for UART0 signal now, otherwise do nothing
-	//PrintWAVR("ACKW.");			//ACK grom GAVR
+	PrintWAVR("A.");		//A for ACK
 	prtDEBUGled &= ~(1 << bnDBG4);
 	sei();
 }
@@ -212,7 +210,8 @@ ISR(INT1_vect){
 	flagWaitingForBone=fTrue;
 	UCSR0B |= (1 << RXCIE0);	//enable receiver 1
 	__killCommINT();
-	PrintBone("ACKB.");			//Ack from GAVR
+	char dummy=UDR0;
+	PrintBone("A.");			//Ack from GAVR
 	sei();
 }
 /************************************************************************/
@@ -223,7 +222,7 @@ ISR(INT6_vect){
 	unsigned int value=TCNT1;
 	
 	prtDEBUGled |= (1 << bnDBG1);
-	_delay_ms(250);
+	Wait_ms(200);
 	if (flagNoSpeed){
 		flagNoSpeed=fFalse;
 		globalTrip.resetSpeedPoints();
@@ -292,7 +291,7 @@ ISR(TIMER2_OVF_vect){
 	
 	//If sending to WAVR, institue the timeout
 	if (flagSendWAVR && sendingWAVRtimeout <= COMM_TIMEOUT_SEC){sendingWAVRtimeout++;}
-	else if (flagSendWAVR && sendingWAVRtimeout > COMM_TIMEOUT_SEC){flagSendWAVR=fFalse; __enableCommINT();}		//this doesn't allow for a resend.
+	else if (flagSendWAVR && sendingWAVRtimeout > COMM_TIMEOUT_SEC){sendingWAVRtimeout=0;flagSendWAVR=fFalse; __enableCommINT();}		//this doesn't allow for a resend.
 	else if (!flagSendWAVR && sendingWAVRtimeout > 0){sendingWAVRtimeout=0;}
 	else;
 	
@@ -328,22 +327,18 @@ int main(void)
 		//Receiving from WAVR. Either a time string or asking user to set date/time/both.
 		if (flagReceiveWAVR && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG9);		//second from bottom, next to RTC...
-			Wait_ms(500);
 			ReceiveWAVR();
 			__enableCommINT();
 			prtDEBUGled2 &= ~(1 << bnDBG9);
 		}
 		
-		prtDEBUGled2 |= (1 << bnDBG8);
-		Wait_sec(1);
-		prtDEBUGled2 &= ~(1 << bnDBG8);
-		Wait_sec(1);
 		//Receiving from the Bone. Could be a number of things. Needs to implement a state machine.
 		if (flagReceiveBone && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
-			Wait_ms(500);
-			//ReceiveBone();
+			ReceiveBone();
+			flagReceiveBone=fFalse;
 			prtDEBUGled2 &= ~(1 << bnDBG8);	
+			Wait_sec(2);
 			__enableCommINT();
 		}		
 			
@@ -353,21 +348,27 @@ int main(void)
 			prtDEBUGled |= (1 << bnDBG2);		//third from top.
 			__killCommINT();
 			Wait_ms(500);
-			//SendWAVR();
+			PrintBone("Sending to WAVR.");
+			SendWAVR();
 			prtDEBUGled &= ~(1 << bnDBG2);	
+			Wait_sec(2);
 			__enableCommINT();
 		}
 		
 		//WAVR hasn't updated the time, need to get it from user...make sure WAVR isn't about to send the time, or waiting to
 		if (flagGetUserClock && !flagWaitingForWAVR && !flagQUIT){
 			//Get the time and date from the user
+			/* this is where we do that in LCD land. */
 			//if time/date valid, set, save,send
 			prtDEBUGled |= (1 << bnDBG7);
-			Wait_sec(3);
+			Wait_sec(1);
 			prtDEBUGled &= ~(1 << bnDBG7);
-			BOOL valid=fFalse;
-			if (valid){flagUpdateWAVRtime=fTrue; flagWAVRtime=fFalse; flagGetWAVRtime=fFalse;}				//SendWAVR() will set the flags down accordingly
-			else {flagSendWAVR=fFalse;}
+			flagWaitingForWAVR=fFalse;
+			flagUpdateWAVRtime=fTrue;
+			flagGetUserClock=fFalse; 
+			flagWAVRtime=fFalse;
+			flagGetWAVRtime=fFalse;				//SendWAVR() will set the flags down accordingly
+			
 		}			
 				
 		if (flagQUIT){
@@ -478,7 +479,7 @@ void EnableRTCTimer(){
 	//Asynchronous should be done based on TOSC1 and TOSC2
 	//Give power back to Timer2
 	PRR0 &= ~(1 << PRTIM2);
-	_delay_ms(2);	//give it time to power on
+	Wait_ms(2);	//give it time to power on
 	
 	//Set to Asynchronous mode, uses TOSC1/TOSC2 pins
 	ASSR |= (1 << AS2);
@@ -492,18 +493,7 @@ void EnableRTCTimer(){
 	//Away we go
 }
 
-/*************************************************************************************************************/
-void Wait_ms(unsigned int delay)
-{
-	volatile int i;
 
-	while(delay > 0){
-		for(i = 0; i < 200; i++){
-			asm volatile("nop");
-		}
-		delay -= 1;
-	}
-}
 /************************************************************************************************************/
 void Wait_sec(unsigned int delay){
 	volatile int startingTime = currentTime.getSeconds();

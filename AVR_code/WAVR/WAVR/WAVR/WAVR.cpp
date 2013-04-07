@@ -2,7 +2,7 @@
 | WAVR.cpp
 | Author: Todd Sukolsky
 | Initial Build: 1/28/2013
-| Last Revised: 4/2/13
+| Last Revised: 4/6/13
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main.cpp file for the RTC to be implemented on the 
@@ -57,6 +57,9 @@
 |				 almost like it is drawing an ubsurd amount of current. 
 |			4/2- Added functionality of GPIO line in power up for GAVR. If it doesn't power on when I want, looks for  the GPIO
 |				 line and then sends an interrupt.
+|			4/3-4/6- Debugging communication protocols between the two AVR chips. Communication from BeagleBone to the WAVR works,
+|				 BeagleBone to GAVR works in limited capacity (full functinoality to be added 4/7). See "myUart.h" for mroe 
+|				 information/revision history.
 |================================================================================
 | Revisions Needed: 
 |		(1)	  3/26- Currently, if the WAVR is going to update the time, but not the date, on the GAVR it has to 
@@ -131,8 +134,6 @@ void DeviceInit();
 void AppInit(unsigned int ubrr);
 void AppInit2(unsigned int ubrr);
 void EnableRTCTimer();
-void Wait_ms(volatile int delay);
-void Wait_sec(volatile int sec);
 void GoToSleep(BOOL shortOrLong);
 void TakeADC();
 void GetTemp();
@@ -151,7 +152,7 @@ myTime currentTime;  //The clock, MUST BE GLOBAL. In final program, will initiat
 /*********************************************GLOBAL FLAGS*******************************************************/
 /****************************************************************************************************************/
 /*==============================================================================================================*/
-BOOL flagGoToSleep=fTrue, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaitingForReceiveGAVR, flagWaitingForSYNGAVR, flagWaitingForSYNBone;
+BOOL flagGoToSleep, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaitingForReceiveGAVR, flagWaitingForSYNGAVR, flagWaitingForSYNBone;
 /* flagGoToSleep: go to sleep on end of while(fTrue) loop														*/
 /* flagUARTbone: receiving info from the bone																	*/
 /* flagNormalMode: normal mode of operation, take ADC and temp readings											*/
@@ -187,15 +188,17 @@ BOOL flagNewShutdown, flagShutdown,flagGoodTemp, flagGoodVolts, restart, flagFre
 //PCINT_17: Getting information from the GAVR
 ISR(PCINT2_vect){
 	cli();
-	if ((PINC & (1 << PCINT17)) && !flagShutdown){
+	if (PINC & (1 << PCINT17)){
+		__killCommINT();
 		//Do work, correct interrupt
 		UCSR1B |= (1 << RXCIE1);
+		sei();
 		flagGoToSleep=fFalse;
 		flagNormalMode=fFalse;
 		flagWaitingForSYNGAVR=fTrue;
-		__killCommINT();
 		//Acknowledge
-		PrintGAVR("ACKG.");
+		char dummy=UDR1;
+		PrintGAVR("A.");
 	}
 	sei();
 }	
@@ -207,9 +210,11 @@ ISR(INT2_vect){	//about to get time, get things ready
 		flagGoToSleep=fFalse;	//no sleeping, wait for UART_RX
 		flagNormalMode=fFalse;
 		flagWaitingForSYNBone=fTrue;
+		flagReceivingBone=fFalse;
 		__killCommINT();
+		char dummy=UDR0;		//clear the register
 		//Acknowledge connection, disable INT2_vect
-		PrintBone("ACKB.");
+		PrintBone("A.");
 		UCSR0B |= (1 << RXCIE0);
 	}
 	sei();
@@ -233,10 +238,10 @@ ISR(USART1_RX_vect){
 	if (flagWaitingForSYNGAVR){
 		flagReceivingGAVR=fTrue;
 		flagWaitingForSYNGAVR=fFalse;
+		PrintBone("SetReceiveG.");
 	}else {
 		flagReceivingGAVR=fFalse;
 	}
-	
 	UCSR1B &= ~(1 <<RXCIE1);	//disable interrupt
 	sei();
 }
@@ -246,28 +251,28 @@ ISR(USART1_RX_vect){
 ISR(TIMER2_OVF_vect){
 	cli();
 	prtSLEEPled ^= (1 << bnSLEEPled);
-	static int gavrSendTimeout=0, boneReceiveTimeout=0, gavrReceiveTimeout=0, startupTimeout=0;
+	static unsigned int gavrSendTimeout=0, boneReceiveTimeout=0, gavrReceiveTimeout=0, startupTimeout=0;
 	
 	currentTime.addSeconds(1);
 	
 	//GAVR Transmission Timeout
 	if (flagSendingGAVR && gavrSendTimeout <=COMM_TIMEOUT_SEC){gavrSendTimeout++;}
-	else if (flagSendingGAVR && gavrSendTimeout > COMM_TIMEOUT_SEC){flagSendingGAVR=fFalse;flagGoToSleep=fTrue; gavrSendTimeout=0; __enableCommINT();}
+	else if (flagSendingGAVR && gavrSendTimeout > COMM_TIMEOUT_SEC){__killUARTrec();flagSendingGAVR=fFalse;flagGoToSleep=fTrue; gavrSendTimeout=0; __enableCommINT();}
 	else if (!flagSendingGAVR && gavrSendTimeout > 0){gavrSendTimeout=0;}
 	else;
 	
 	//BeagleBone Reception Timeout
 	if ((flagReceivingBone|| flagWaitingForSYNBone) && (boneReceiveTimeout <=COMM_TIMEOUT_SEC)){boneReceiveTimeout++;}
-	else if ((flagReceivingBone|| flagWaitingForSYNBone) && (boneReceiveTimeout > COMM_TIMEOUT_SEC)){flagReceivingBone=fFalse; flagWaitingForSYNBone=fFalse;flagGoToSleep=fTrue; flagNormalMode=fTrue; boneReceiveTimeout=0; __enableCommINT();}
+	else if ((flagReceivingBone|| flagWaitingForSYNBone) && (boneReceiveTimeout > COMM_TIMEOUT_SEC)){__killUARTrec();flagReceivingBone=fFalse; flagWaitingForSYNBone=fFalse;flagGoToSleep=fTrue; flagNormalMode=fTrue; boneReceiveTimeout=0; __enableCommINT();}
 	else if ((!flagReceivingBone && !flagWaitingForSYNBone) && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
 	else;
 
 	//GAVR Reception Timeout
 	if ((flagReceivingGAVR || flagWaitingForSYNGAVR) && gavrReceiveTimeout <= COMM_TIMEOUT_SEC){gavrReceiveTimeout++;}
-	else if ((flagReceivingGAVR || flagWaitingForSYNGAVR) && gavrReceiveTimeout > COMM_TIMEOUT_SEC){flagReceivingGAVR=fFalse;flagGoToSleep=fTrue; flagWaitingForSYNGAVR=fFalse;flagNormalMode=fTrue;boneReceiveTimeout=0; __enableCommINT();}
-	else if ((!flagReceivingGAVR && !flagWaitingForSYNGAVR) && boneReceiveTimeout > 0){boneReceiveTimeout=0;}
+	else if ((flagReceivingGAVR || flagWaitingForSYNGAVR) && gavrReceiveTimeout > COMM_TIMEOUT_SEC){__killUARTrec(); flagReceivingGAVR=fFalse;flagGoToSleep=fTrue; flagWaitingForSYNGAVR=fFalse;flagNormalMode=fTrue;gavrReceiveTimeout=0; __enableCommINT();}
+	else if ((!flagReceivingGAVR && !flagWaitingForSYNGAVR) && gavrReceiveTimeout > 0){gavrReceiveTimeout=0;}
 	else;
-
+	
 	//Startup Tiemout for sending clock to GAVR
 	if ((flagFreshStart || restart) && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
 	else if ((flagFreshStart || restart) && startupTimeout > STARTUP_TIMEOUT_SEC){
@@ -300,8 +305,8 @@ int main(void)
 	TakeADC();
 	flagGoodTemp=fTrue;
 	if (flagGoodVolts && flagGoodTemp){				//Good to power on system
-		__enableCommINT();
 		PowerUp(POWER_UP_INTERVAL);
+		__enableCommINT();
 		flagFreshStart=fTrue;
 		flagShutdown=fFalse;
 	} else {										//Something isn't right, don't power on the system.
@@ -314,10 +319,10 @@ int main(void)
 	//main programming loop
 	while(fTrue)
 	{		
-		Wait_ms(2000);
 		//If receiving UART string, go get rest of it.
 		if (flagReceivingBone){
 			ReceiveBone();
+			Wait_sec(2);
 			__enableCommINT();
 			flagGoToSleep=fTrue;
 			flagNormalMode=fTrue;
@@ -325,19 +330,22 @@ int main(void)
 		
 		//Receiving Data/Signals from GAVR
 		if (flagReceivingGAVR){
+			PrintBone("ReceivingG.");
 			ReceiveGAVR();
-			__enableCommINT();
-			if (!flagReceivingBone){		//Just in case there was an interrupt IMMEDIATELY after the enabling of Communication interrupts
+			Wait_sec(2);			
+			__enableCommINT();	
+			if (!flagReceivingBone){
 				flagGoToSleep=fTrue;
 				flagNormalMode=fTrue;
-			}			
+			}
 		}//end flag Receiving from GAVR case
 		
-	
 		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The internal send machine deals with the flags.
 		if ((flagUpdateGAVRClock  || flagUserClock) && !flagWaitingForReceiveGAVR){
+			PrintBone("SendingG.");
 			__killCommINT();
 			sendGAVR();
+			Wait_sec(2);
 			__enableCommINT();
 		}//end send to GAVR case
 
@@ -370,7 +378,7 @@ int main(void)
 		}//end normal mode Check Analog Signals		
 		
 		//Waiting...
-		//Wait_sec(1);
+		Wait_ms(2000);
 				
 		//About to shutdown, save EEPROM
 		if (flagNewShutdown){
@@ -398,7 +406,7 @@ int main(void)
 		}//end restart		
 		
 		//If it's time to go to sleep, go to sleep. INT0 or TIM2_overflow will wake it up.
-		if (flagGoToSleep){GoToSleep(flagShutdown);}
+		if (flagGoToSleep && !flagUserClock){GoToSleep(flagShutdown);}
 		
 		//Add logic for an invalid date and time somehow getting in here
 		if (flagInvalidDateTime && !flagShutdown){
@@ -484,7 +492,7 @@ void AppInit(unsigned int ubrr){
 	__killCommINT();
 	EICRA = (1 << ISC21)|(1 << ISC20);			//falling edge of INT2 enables interrupt
 	//Enable PCINT17
-	PCICR |= (1 << PCIE0);
+	PCICR |= (1 << PCIE2);
 	
 	//Enable SPI for TI temperature
 	ddrSpi0 |= (1 << bnMosi0)|(1 << bnSck0)|(1 << bnSS0);	//outputs
@@ -536,24 +544,6 @@ void EnableRTCTimer(){
 	
 	//Away we go
 }
-/*************************************************************************************************************/
-void Wait_ms(int delay)
-{
-	volatile int i;
-
-	while(delay > 0){
-		for(i = 0; i < 200; i++){
-			asm volatile("nop");
-		}
-		delay -= 1;
-	}
-}
-/************************************************************************************************************/
-void Wait_sec(int sec){
-	volatile int startingTime = currentTime.getSeconds();
-	volatile int endingTime= (startingTime+sec)%60;
-	while (currentTime.getSeconds() != endingTime){asm volatile ("nop");}
-}
 
 /*************************************************************************************************************/
 
@@ -600,7 +590,7 @@ void TakeADC(){
 	ADMUX |= (1 << REFS1);	//internal 1.1V reference
 	ADCSRA |= (1 << ADEN)|(1 << ADPS2);			//clkIO/16
 	DIDR0 = 0xFE;								//disable all ADC's except ADC0
-	Wait_ms(100);									//Tim for registers to setup
+	Wait_ms(2);									//Tim for registers to setup
 	
 	//cli();
 	//Run conversion twice, throw first one out

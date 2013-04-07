@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 3/3/2013
-| Last Revised: 3/27/2013
+| Last Revised: 4/6/2013
 | Copyright of Todd Sukolsky
 |================================================================================
 | Description: This file conatians the UART0 and UART1 basic send and receive routines used 
@@ -25,8 +25,23 @@
 |				  string parsing.(2)Tweaked Bone receive. Got rid of flagNoGPSTime-->inverse case of flagUserClock.
 |				  Finished UART transmissions. All that's needed is testing now.
 |			3/28: Added one line in SendGAVR()...flagSendingWAVR=fTrue before it starts.
+|			4/3-4/6: Major debugging of UART communications. WAVR->BeagleBone works perfectly, no issues.
+|				  The transmission to the GAVR from the WAVR works on the SECOND TRY for all transmissions.
+|				  The WAVR cannot, however, receive information from the GAVR so if the user enters the clock,
+|				  it cannot update this. If this problem is not resolved within 2 hours tomorrow, 4/7, plan is to 
+|				  temporarilty scrap it and let the GPS update it given good conditions. Otherwise nothing will
+|				  get the new time. Round Robin could be put in place, but that's a big pain in the a**. The issue
+|				  with commuincation with GAVR must be timing. On startup timeout the "getUserClock" feature fails
+|				  on first send, where the WAVR lines apparently transmit nothing. Then on the second try, the lines
+|				  work correctly, however there is a long (1-2 second) delay and then the INT0 (for GAVR) is triggered
+|				  and the functionality works perfectly. Tried implementing timing shifts in this module, but that 
+|				  failed to make a difference. Prof. Kia is planning to look at it tomorrow, so morning task is to 
+|				  write/implement the Trip protocol and BeagleBone UART protocol and BeagleBone Python code; then move on 
+|				  to this debugging. (2) Changed messages to shorter lengths, example "ACKBAD." is now "B." and "ACK." is now
+|				  "A.". Shortens time needed allowing for cleaner communications.
 |================================================================================
 | Revisions Needed: (1) OPTIONAL-Add "ACKBAD" case in ReceiveGAVR()
+|							--Issue Resolved 4/5
 |================================================================================
 | *NOTES: This is the UART for the WAVR.
 \*******************************************************************************/
@@ -49,7 +64,15 @@ extern BOOL flagReceivingBone, flagFreshStart, restart, flagReceivingGAVR,flagWa
 extern WORD globalADC, globalTemp;
 extern myTime currentTime;
 
-void Wait_ms2(int delay)
+
+/************************************************************************************************************/
+void Wait_sec(int sec){
+	volatile int startingTime = currentTime.getSeconds();
+	volatile int endingTime= (startingTime+sec)%60;
+while (currentTime.getSeconds() != endingTime){asm volatile ("nop");}
+}
+/************************************************************************************************************/
+void Wait_ms(int delay)
 {
 	volatile int i;
 
@@ -60,6 +83,15 @@ void Wait_ms2(int delay)
 		delay -= 1;
 	}
 }
+/************************************************************************************************************/
+void SendInterruptGAVR(){
+	//Raise interrupts to GAVR for three ish clock cycles. Tried waiting....didn't work.
+	prtGAVRINT |= (1 << bnGAVRINT);
+	for (int i=0; i<2; i++){asm ("nop");}
+	prtGAVRINT &= ~(1 << bnGAVRINT);
+	Wait_sec(1);
+}
+
 /**************************************************************************************************************/
 void PutUartChBone(char ch){
 	while (!(UCSR0A & (1 << UDRE0)));
@@ -71,7 +103,6 @@ void PrintBone(char string[]){
 	
 	while (string[i]){
 		PutUartChBone(string[i++]);
-		Wait_ms2(100);
 	}
 }
 /*************************************************************************************************************/
@@ -85,8 +116,8 @@ void PutUartChGAVR(char ch){
 void PrintGAVR(char string[]){
 	BYTE i=0;
 	while (string[i]){
+		Wait_ms(350);
 		PutUartChGAVR(string[i++]);
-		Wait_ms2(100);
 	}
 }
 /*************************************************************************************************************/
@@ -122,17 +153,16 @@ void sendGAVR(){
 		/*************************************************************************************************************/
 		switch (state){
 			case 0: {
-				//Raise interrupts to GAVR for three ish clock cycles.
-				prtGAVRINT |= (1 << bnGAVRINT);
-				for (int i=0; i<2; i++){asm volatile("nop");}
-				prtGAVRINT &= ~(1 << bnGAVRINT);
+				SendInterruptGAVR();
 				state=1;
 				break;
 			}//end case 0
 			case 1: {
-				Wait_ms2(500);			
+				Wait_ms(300);		//Wait for connection to set and something to come in.			
 				//Put together string that is being received.
 				while (noCarriage && flagSendingGAVR){
+					Wait_ms(100);				//wait for the register to start to load.
+					PrintBone("WaitingW...");
 					while (!(UCSR1A & (1 << RXC1)) && flagSendingGAVR);				//wait for next character
 					if (!flagSendingGAVR){state=7; break;}		//if timeout is why we broke, just exit
 					recChar=UDR1;
@@ -144,29 +174,32 @@ void sendGAVR(){
 				break;
 				}//end case 1
 			case 2: {
-				if (!strncmp(recString,"ACKW.",5)){state=3;}
-				else if (!strncmp(recString,"ACKGB.",6)){state=4;}
-				else if (!strncmp(recString,"ACKBAD.",7)){state=6;}
+				if (!strncmp(recString,"A.",2)){state=3;}		//ack
+				else if (!strncmp(recString,"G.",2)){state=5;}	//get
+				else if (!strncmp(recString,"B.",2)){state=6;}	//BAD
 				//send string case.
-				else if (flagUpdateGAVRClock && !strcmp(recString,sentString)){state=5;}		//they match, successful send.
-				else if (flagUpdateGAVRClock && strcmp(recString,sentString) && strcmp(recString,"ACKBAD.")){state=7;}	//string isnt the same as ACKBAD or what we sent.
-				else{state=7;} //invalid ack. ACKERROR goes here.
+				else if (flagUpdateGAVRClock && !strcmp(recString,sentString)){PrintBone("Correct back.");state=5;}		//they match, successful send.
+				else{PrintBone("Comparing.");PrintBone(recString);state=7;} //invalid ack. ACKERROR goes here.
 				break;
 				}//end case 2
 			case 3:{
+				Wait_ms(100);
 				if (flagUserClock && !flagUpdateGAVRClock){
-					PrintGAVR("SYNGB.");
+					PrintBone("GetTime.");
+					PrintGAVR("G.");
 					flagWaitingForReceiveGAVR=fTrue;				
 				//If we are updating the gavr, send the time and date together regardless. preface with SYN
 				} else if (flagUpdateGAVRClock && !flagUserClock){
-					strcpy(sentString,"ACK");			//this is a syn, not ack to save logic in GAVR code. Can change if we want.
+					PrintBone("Sending time.");
+					strcpy(sentString,"A");			//this is a syn, not ack to save logic in GAVR code. Can change if we want.
 					strcat(sentString,currentTime.getTime());
 					strcat(sentString,"/");	//add delimiter.
 					strcat(sentString,currentTime.getDate());
 					strcat(sentString,".\0");
-					PrintGAVR("SYN");
+					PutUartChGAVR('S');
 					printTimeDate(fFalse,fTrue,fTrue);			//date is terminated by a . so don't need to send character
-				} else {state=5; break;}	//end if-else (what we are doing).
+					Wait_ms(500);
+				} else {PrintBone("noflags.");state=7; break;}	//end if-else (what we are doing).
 							
 				//Reset the recString to receive the next ACK.
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
@@ -177,18 +210,12 @@ void sendGAVR(){
 				state=1;
 				break;
 				}//end case 3
-			case 4:{
-				//Successful communication with just flags
-				Wait_ms2(200);
-				PrintGAVR("SYNDONE.");	//end the communication
-				state=5;
-				break;				
-				}//end case 4	
 			case 5:{
 				//Successful communications overall
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
+				PrintBone("Success.");
 				flagSendingGAVR=fFalse;
-				flagWaitingToSendGAVR=fFalse;
+				flagUpdateGAVRClock=fFalse;
 				state=0;
 				break;
 				}//end case 5
@@ -196,12 +223,12 @@ void sendGAVR(){
 				//ACKBAD. Check the date and time to see if its okay. IF okay, go to state 7 to set waiting flag. otherwise set invalid time and close through state 5.
 				BOOL dateOK = currentTime.checkValidity();
 				if (dateOK){state=7;}
-				else {state=5; flagInvalidDateTime=fTrue;}
+				else {state=7; flagInvalidDateTime=fTrue;}
 				break;
 				}//end case 6
 			case 7:{
 				//Got the wrong ACK back, or invalid ACK. Wait for next cycle then resend. Keep all the flags the same
-				flagWaitingToSendGAVR=fTrue;
+				PrintBone("ErrorS.");
 				flagSendingGAVR=fFalse;
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 				state=0;
@@ -210,13 +237,6 @@ void sendGAVR(){
 			default:{state=0; flagSendingGAVR=fFalse; noCarriage=fFalse; break;}
 		}//end switch
 	}//end while
-		
-	//If we aren't waiting for the next round, don't reset the flags. If we are waiting, just reset the waiting flag->the UserCLock and GAVRClcok flags
-	//will still be at the values they were before.
-	if (!flagWaitingToSendGAVR){
-		flagUserClock=fFalse;
-		flagUpdateGAVRClock=fFalse;	
-	} else {flagWaitingToSendGAVR=fFalse;}
 }//end function 	
 	
 /*************************************************************************************************************/
@@ -225,7 +245,7 @@ void ReceiveBone(){
 	char recChar, recString[40];
 	unsigned int strLoc=0;
 	BOOL noCarriage=fTrue;
-	
+	sei();
 	while (flagReceivingBone){
 			/*************************************************************BEGIN STATE MACHINE************************************************/
 			/* State 0: Get the first character that was loaded in the buffer. If ., go to ACKERROR state, else go to state 1				*/
@@ -253,8 +273,9 @@ void ReceiveBone(){
 					}//end case 0
 				case 1:{
 					while (noCarriage && flagReceivingBone){	//while there isn't a timeout and no carry
+						Wait_ms(50);
 						while ((!(UCSR0A & (1 << RXC0))) && flagReceivingBone);		//get the next character
-						if (!flagReceivingBone){state=6;}					//if there was a timeout, break out and reset state
+						if (!flagReceivingBone){state=6;break;}					//if there was a timeout, break out and reset state
 						recChar=UDR0;
 						recString[strLoc++]=recChar;
 						if (recChar == '.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
@@ -264,24 +285,21 @@ void ReceiveBone(){
 					break;
 					}//end case 1
 				case 2:{
-					if (!strncmp(recString,"date.",5)){printTimeDate(fTrue,fFalse,fTrue); state=6;}
-					else if (!strncmp(recString,"time.",5)){printTimeDate(fTrue,fTrue,fFalse);state=6;}
-					else if (!strncmp(recString,"both.",5)){printTimeDate(fTrue,fTrue,fTrue);state=6;}
-					else if (!strncmp(recString,"save.",5)){saveDateTime_eeprom(fTrue,fFalse);PrintBone(recString);state=6;}
-					else if (!strncmp(recString,"adc.",4)){char tempChar[7]; utoa(globalADC,tempChar,10); tempChar[6]='\0'; PrintBone(tempChar);state=6;}
-					else if (!strncmp(recString,"temp.",5)){char tempChar[7]; utoa(globalTemp,tempChar,10); tempChar[6]='\0'; PrintBone(tempChar);state=6;}
-					else if ((recString[4] == ':') != (recString[5] == ':')){//time/date string, go parse in state 7
+					if (!strncmp(recString,"d.",2)){printTimeDate(fTrue,fFalse,fTrue); state=6;}
+					else if (!strncmp(recString,"t.",2)){printTimeDate(fTrue,fTrue,fFalse);state=6;}
+					else if (!strncmp(recString,"b.",2)){printTimeDate(fTrue,fTrue,fTrue);state=6;}
+					else if (!strncmp(recString,"s.",2)){saveDateTime_eeprom(fTrue,fFalse);PrintBone(recString);state=6;}
+					else if (!strncmp(recString,"a.",2)){char tempChar[7]; utoa(globalADC,tempChar,10); tempChar[6]='\0'; PrintBone(tempChar);state=6;}
+					else if (!strncmp(recString,"te.",3)){char tempChar[7]; utoa(globalTemp,tempChar,10); tempChar[6]='\0'; PrintBone(tempChar);state=6;}
+					else if ((recString[2] == ':') != (recString[3] == ':')){//time/date string, go parse in state 73
 						state=7;	
-					} else if (!strncmp(recString,"SYNNONE.",8)){PrintBone("ACKNONE."); state=6;}	
+					} else if (!strncmp(recString,"N.",2)){PrintBone("N."); state=6;}//NONE time.	
 					else {state=5;}						
 					break;
 					}//end case 2
 				case 3:{
-					_delay_ms(100);
 					//Successful receive state of time, change SYN to ACK, then print what we got.
 					recString[0]='A';
-					recString[1]='C';
-					recString[2]='K';
 					PrintBone(recString);
 					state=0;
 					flagReceivingBone=fFalse;
@@ -290,8 +308,7 @@ void ReceiveBone(){
 					}//end case 3
 				case 4:{
 					//Bad time string.
-					_delay_ms(100);
-					PrintBone("ACKBAD.");
+					PrintBone("B.");
 					flagReceivingBone=fFalse;
 					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					state=0;
@@ -299,8 +316,8 @@ void ReceiveBone(){
 					}//end case 4
 				case 5:{
 					//Didn't get a good ack or there was an error.
-					_delay_ms(100);
-					PrintBone("ACKERROR.");
+					PrintBone("E.");
+					PrintBone(recString);
 					flagReceivingBone=fFalse;
 					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					state=0;
@@ -317,7 +334,7 @@ void ReceiveBone(){
 					//Parse the string
 					//Go through the string and parse for the time. Must go through the time to get the date.
 					BOOL successTime=fFalse, successDate=fFalse;			//whether or not we have successfully parsed string
-					int counter=3;
+					int counter=1;
 					int tempNum[3]={0,0,0}, tempNum1[3]={0,0,0},dmy=0, hms=0, placement=0;
 					char tempStringNum[5];
 					
@@ -430,7 +447,6 @@ void ReceiveGAVR(){
 			switch(state){
 				case 0:{
 					//Beginning case
-					_delay_ms(1000);	//wait for something to be loaded into the register.
 					strLoc=0;
 					recChar = UDR1;
 					if (recChar=='.'){
@@ -441,6 +457,7 @@ void ReceiveGAVR(){
 				case 1:{
 					//Assemble string case
 					while (noCarriage && flagReceivingGAVR){	//while there isn't a timeout and no carry
+						Wait_ms(100);
 						while (!(UCSR1A & (1 << RXC1)) && flagReceivingGAVR);				//get the next character
 						if (!flagReceivingGAVR){state=0; break;}							//if there was a timeout, break out and reset state
 						recChar=UDR1;
@@ -453,8 +470,8 @@ void ReceiveGAVR(){
 				}//end case 1
 				case 2:{
 					//Got string, see what it is case.
-					if (!strncmp(recString,"SYNNEED.",8)){state=4;} //set appropriate flags and respond in appropriate way.
-					else if ((recString[4]==':') != (recString[5]==':')){state=3;}//go parse the string for a time and date. SYN03:33:12/DATE or SYN3:33:12/DATE, either char 4 or 5 is :
+					if (!strncmp(recString,"N.",8)){state=4;} //set appropriate flags and respond in appropriate way.
+					else if ((recString[2]==':') != (recString[3]==':')){state=3;PrintBone("Got a time.");}//go parse the string for a time and date. SYN03:33:12/DATE or SYN3:33:12/DATE, either char 4 or 5 is :
 					else {state=6;}
 					break;
 				}//end case 2
@@ -463,7 +480,7 @@ void ReceiveGAVR(){
 					if (flagUserClock){
 						//Go through the string and parse for the time. Must go through the time to get the date.
 						BOOL successTime=fFalse, successDate=fFalse;			//whether or not we have successfully parsed string
-						int counter=0;
+						int counter=1;
 						int tempNum[3]={0,0,0}, tempNum1[3]={0,0,0},dmy=0, hms=0, placement=0;
 						char tempStringNum[5];
 						
@@ -487,7 +504,8 @@ void ReceiveGAVR(){
 							successTime=fTrue;
 						} else {
 							state=5;
-							PrintGAVR("ACKBAD.");
+							PrintGAVR("B.");
+							break;
 						}
 						
 						//If flag for Date is set, then parse the string and do something with it.
@@ -514,28 +532,29 @@ void ReceiveGAVR(){
 							tempNum1[dmy] = atoi(tempStringNum);
 							successDate=fTrue;
 						} else {//something in the string was wrong, ACKBAD and then exit
-							PrintGAVR("ACKBAD.");
+							PrintGAVR("B.");
 							state=5;
+							break;
 						}
 										
 						//Make sure the settings are okay before setting the time. If not, send ACKBAD and exit.
-						if (tempNum[0]/24==0 && tempNum[1]/60==0 && tempNum[2]/60==0 && successTime){
+						if (successDate && successTime){
 							currentTime.setTime(tempNum[0],tempNum[1],tempNum[2]);
-							saveDateTime_eeprom(fTrue,fFalse);
+							currentTime.setDate(tempNum1[0],tempNum1[1],tempNum1[2]);
+							saveDateTime_eeprom(fTrue,fTrue);
+							flagUserClock=fFalse;
+							
+							PrintBone("Set my time.");							
+							//send ACK
+							recString[0]='A';
+							PrintGAVR(recString);
+							state=7;
 						} else {
-							PrintGAVR("ACKBAD.");
+							//Here is a choice: Do we watn  to user to indicate the time is wrong, or just make them set it? Doesn't really matter.
+							flagUserClock=fTrue;
+							PrintBone("Bad time.");
 							state=5;
-						}//end if-else time
-						
-						//Make sure the date is correct before setting it. If not, send ACKBAD. and exit.
-						if (tempNum1[0]/13==0 && tempNum1[1]/32==0 && tempNum1[2]/2000>=1 && successDate){
-							currentTime.setDate(tempNum1[0],tempNum1[1], tempNum1[2]);
-							saveDateTime_eeprom(fFalse,fTrue);
-						} else {
-							PrintGAVR("ACKBAD.");
-							state=5;
-							break;
-						}//end if-else date
+						}			
 						
 						//If we wanted date and got it correctly, or wanted time and got it correctly, go to state 7 to ack with the appropriate response
 						if (flagUserClock && successDate && successTime){
@@ -543,11 +562,11 @@ void ReceiveGAVR(){
 							flagWaitingForReceiveGAVR=fFalse;
 							state=7;					//Respond with correct string ACK
 						} else {
-							PrintGAVR("ACKBAD.");
+							PrintGAVR("B.");
 							state=5;
 						}																										
 					} else {	//don't need the date or time, wasn't looking for it. Respond with ACKNO. Should reset all flags on GAVR side.
-						PrintGAVR("ACKNO.");
+						PrintGAVR("NO.");
 						state=5;
 					}					
 					// end if-else (flagUserClock)					
@@ -555,13 +574,15 @@ void ReceiveGAVR(){
 					break;
 					}//end case 3				
 				case 4:{
-					_delay_ms(100);
+					Wait_ms(100);
 					//Successful SYNNEED case.
 					if (!flagUserClock){	//If we don't need the date or time, update with what we have.
 						flagUpdateGAVRClock=fTrue;
-						PrintGAVR("ACKNEED.");				//respond with correct ack
+						PrintGAVR("N.");				//respond with correct ack
+						PrintBone("Need.");
 					} else {
-						PrintGAVR("ACKNO.");	//say we can't give you anything, ask the user.
+						PrintBone("NO.");
+						PrintGAVR("NO.");	//say we can't give you anything, ask the user.
 						//Should be expecting something from the GAVR with user date and time, this reminds the GAVR.
 					} //end if-else
 					state=5;
@@ -571,24 +592,25 @@ void ReceiveGAVR(){
 					//Exit case
 					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					flagReceivingGAVR=fFalse;
+					flagWaitingForReceiveGAVR=fFalse;
 					state=0;		//just in case
 					break;
 				}//end case 5
 				case 6:{
 					//Error in ACK case
-					_delay_ms(100);
-					PrintGAVR("ACKERROR.");
+					Wait_ms(150);
+					PrintGAVR("E.");
+					PrintBone("ErrorR.");
 					state=5;
 					break;
 				}//end case 6
 				case 7:{
-					_delay_ms(100);
+					Wait_ms(150);
 					//Successful grab of date/time case
 					recString[0]='A';
-					recString[1]='C';
-					recString[2]='K';
 					PrintGAVR(recString);
 					state=5;
+					PrintBone("Success.");
 					break;		
 				}//end case 7
 				default: {state=0; strLoc=0; flagReceivingGAVR=fFalse; break;}				

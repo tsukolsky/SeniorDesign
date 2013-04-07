@@ -2,7 +2,7 @@
 | eepromSaveRead.h
 | Author: Todd Sukolsky
 | Initial Build: 1/31/2013
-| Last Revised: 1/31/13
+| Last Revised: 3/28/13
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description:	This header contains the EEPROM memory locations for the variables
@@ -37,11 +37,11 @@ extern myTime currentTime;
 #define HR_READINGS_H		22
 
 //EEPROM variables
-BYTE EEMEM eeHour = 12;
-BYTE EEMEM eeMinute = 40;
-BYTE EEMEM eeSecond = 0;
-BYTE EEMEM eeMonth = 2;
-BYTE EEMEM eeDay = 10;
+BYTE EEMEM eeHour = 5;
+BYTE EEMEM eeMinute = 15;
+BYTE EEMEM eeSecond = 10;
+BYTE EEMEM eeMonth = 4;
+BYTE EEMEM eeDay = 1;
 WORD EEMEM eeYear = 2013;
 
 //Could put tripFinished and numberOfTrips in an EEMEM.
