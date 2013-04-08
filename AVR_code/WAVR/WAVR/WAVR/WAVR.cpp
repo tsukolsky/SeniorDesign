@@ -197,7 +197,6 @@ ISR(PCINT2_vect){
 		flagNormalMode=fFalse;
 		flagWaitingForSYNGAVR=fTrue;
 		//Acknowledge
-		char dummy=UDR1;
 		PrintGAVR("A.");
 	}
 	sei();
@@ -212,7 +211,6 @@ ISR(INT2_vect){	//about to get time, get things ready
 		flagWaitingForSYNBone=fTrue;
 		flagReceivingBone=fFalse;
 		__killCommINT();
-		char dummy=UDR0;		//clear the register
 		//Acknowledge connection, disable INT2_vect
 		PrintBone("A.");
 		UCSR0B |= (1 << RXCIE0);
@@ -238,7 +236,6 @@ ISR(USART1_RX_vect){
 	if (flagWaitingForSYNGAVR){
 		flagReceivingGAVR=fTrue;
 		flagWaitingForSYNGAVR=fFalse;
-		PrintBone("SetReceiveG.");
 	}else {
 		flagReceivingGAVR=fFalse;
 	}
@@ -322,17 +319,17 @@ int main(void)
 		//If receiving UART string, go get rest of it.
 		if (flagReceivingBone){
 			ReceiveBone();
-			Wait_sec(2);
+			Wait_sec(4);
 			__enableCommINT();
 			flagGoToSleep=fTrue;
 			flagNormalMode=fTrue;
 		}//end flag Receiving from Bone 
 		
 		//Receiving Data/Signals from GAVR
-		if (flagReceivingGAVR){
-			PrintBone("ReceivingG.");
+		if (flagReceivingGAVR && !flagReceivingBone){
+			PrintBone("Receiving from WAVR.");
 			ReceiveGAVR();
-			Wait_sec(2);			
+			Wait_sec(4);			
 			__enableCommINT();	
 			if (!flagReceivingBone){
 				flagGoToSleep=fTrue;
@@ -341,11 +338,11 @@ int main(void)
 		}//end flag Receiving from GAVR case
 		
 		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The internal send machine deals with the flags.
-		if ((flagUpdateGAVRClock  || flagUserClock) && !flagWaitingForReceiveGAVR){
+		if ((flagUpdateGAVRClock  || flagUserClock) && !flagWaitingForReceiveGAVR && !flagReceivingBone && !flagReceivingGAVR){
 			PrintBone("SendingG.");
 			__killCommINT();
 			sendGAVR();
-			Wait_sec(2);
+			Wait_sec(4);
 			__enableCommINT();
 		}//end send to GAVR case
 
@@ -377,9 +374,6 @@ int main(void)
 			}
 		}//end normal mode Check Analog Signals		
 		
-		//Waiting...
-		Wait_ms(2000);
-				
 		//About to shutdown, save EEPROM
 		if (flagNewShutdown){
 			//Make sure nothing messes with the routine that we care about
@@ -675,8 +669,8 @@ void PowerUp(WORD interval){
 	Wait_sec(interval);
 	
 	//Power on BeagleBone next, takes longer time.
-	//__enableBeagleBone();
-	//Wait_sec(interval);
+	__enableBeagleBone();
+	Wait_sec(interval*2);
 	//while (!(pinBBio & (1 << bnW0B9)));	//Wait for GPIO line to go high
 	
 	//Power on GAVR and Enable GPS

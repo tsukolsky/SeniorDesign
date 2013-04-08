@@ -2,8 +2,8 @@
 | eepromSaveRead.h
 | Author: Todd Sukolsky
 | Initial Build: 1/31/2013
-| Last Revised: 3/28/13
-| Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
+| Last Revised: 4/7/13
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description:	This header contains the EEPROM memory locations for the variables
 |				defined below as well as the routines to save those variables to memory
@@ -13,67 +13,193 @@
 |--------------------------------------------------------------------------------
 | Revisions:1/31- Initial build. Just copy and past of stuff from RTC.cpp
 |			3/28- Started working on Trip EEPROM storage.
+|			4/7-  Changed implementation of EEPROM storage. See note 1. Made functions
+|				  that check the eeprom trip data, store given how many trips there are,
+|				  and read given which thing they want to be read. (2) Made DeleteTrip which uses 
+|				  MoveTrip functionality. Changed "tripsFinished" and "numberofTrips" variables
+|				  to static EEMEM locations. Found, by looking at "*.elf" file the way EEPROM
+|				  is set up. 
 |================================================================================
-| *NOTES:
+| *NOTES: (1) Floats are 4 BYTES, need to change this functionality to accurately get
+|			  ave hr, wheel size, distance, ave speed. Offset is going to grow and needs
+|			  to be tweaked.
+|			--ERROR, dwords are 4 bytes, floats are 32 bits = 4BYTES. http://deans-avr-tutorials.googlecode.com/svn/trunk/EEPROM/Output/EEPROM.pdf
+|		  (1b) The eeprom write/reads can be templatized so that we input a value, size of,
+|				and then the function will write the correct things. http://arduino.cc/forum/index.php/topic,41497.0.html
+|				--Resolved: This actually won't work, needs to be more specific. We can implement a funciton
+|							that writes floats though so it can be reused in all cases.
+|		  (2) Use "eeprom_UPDATE_<type>" for all writes, preserves EEPROM and if the data inthe block is the same,
+|			  doesn't write preserving the data/lifespan of the EEPROM (100,000 reads/writes).
 \*******************************************************************************/
 
 using namespace std;
 
 //Declare the global variable that matters
 extern myTime currentTime;
+extern trip globalTrip;
 
+
+#define FINISHED			1	
+#define UNFINISHED			0
 //Define EEPROM Block Offset parameters.
+#define INITIAL_OFFSET		20				//Should be 10, but just in case.
+#define BLOCK_SIZE			34				//Data spans 34 bytes
+//Actual offsets now
 #define AVESPEED			0
-#define AVEHR				2
-#define DISTANCE			4
-#define START_DAYS			6
-#define START_YEARS			8
-#define SECONDS_IN_DAY		10
-#define DAYS_ELAPSED		12
-#define YEARS_ELAPSED		14
-#define SPEED_READINGS_L	16
-#define SPEED_READINGS_H	18
-#define HR_READINGS_L		20
-#define HR_READINGS_H		22
+#define AVEHR				4
+#define DISTANCE			8
+#define START_DAYS			12
+#define START_YEAR			14
+#define MINUTES_ELAPSED		16
+#define DAYS_ELAPSED		18
+#define YEARS_ELAPSED		20
+#define SPEED_READINGS_L	22
+#define SPEED_READINGS_H	24
+#define HR_READINGS_L		26
+#define HR_READINGS_H		28
+#define WHEEL_SIZE			30		//goes to {33,30}
 
-//EEPROM variables
-BYTE EEMEM eeHour = 5;
-BYTE EEMEM eeMinute = 15;
-BYTE EEMEM eeSecond = 10;
-BYTE EEMEM eeMonth = 4;
-BYTE EEMEM eeDay = 1;
-WORD EEMEM eeYear = 2013;
-
-//Could put tripFinished and numberOfTrips in an EEMEM.
-
+//EEPROM variables, allocated at location 0 and then up from there. hour=0, minute=1, second=2, month=3, day=5, year=6-7=> total offset is 9 or 10, going for 20 just in case. Covering the buttocks
+BYTE EEMEM eeHour = 5;						//location 0
+BYTE EEMEM eeMinute = 15;					//location 1
+BYTE EEMEM eeSecond = 10;					//location 2
+BYTE EEMEM eeMonth = 4;						//location 3
+BYTE EEMEM eeDay = 1;						//location 4
+WORD EEMEM eeYear = 2013;					//location {6,5}
+BYTE EEMEM eeTripFinished = 1;				//location 7 
+BYTE EEMEM eeNumberOfTrips = 0;				//location 8 
 /*************************************************************************************************************/
-void TripEEPROM(){
-	BYTE tripFinished;
-	BYTE numberOfTrips;
+void MoveTripDown(BYTE whichTrip){
+	//First, get the trip that we are moving
+	BYTE offset=INITIAL_OFFSET+(whichTrip-1)*BLOCK_SIZE;
+	WORD startDays,startYear,minutesElapsed,daysElapsed,yearsElapsed,speedReadings_L,speedReadings_H,hrReadings_L,hrReadings_H;
+	float aveSpeed=eeprom_read_float((float*)(offset+AVESPEED));
+	float aveHR=eeprom_read_float((float*)(offset+AVEHR));
+	float distance=eeprom_read_float((float*)(offset+DISTANCE));
+	startDays=eeprom_read_word((WORD*)(offset+START_DAYS));
+	startYear=eeprom_read_word((WORD*)(offset+START_YEAR));
+	minutesElapsed=eeprom_read_word((WORD*)(offset+MINUTES_ELAPSED));
+	daysElapsed=eeprom_read_word((WORD*)(offset+DAYS_ELAPSED));
+	yearsElapsed=eeprom_read_word((WORD*)(offset+YEARS_ELAPSED));
+	speedReadings_L=eeprom_read_word((WORD*)(offset+SPEED_READINGS_L));
+	speedReadings_H=eeprom_read_word((WORD*)(offset+SPEED_READINGS_H));	//2^16-1=65535, so 65535*this number + SPEED_READINGS_LOW
+	hrReadings_L=eeprom_read_word((WORD*)(offset+HR_READINGS_L));
+	hrReadings_H=eeprom_read_word((WORD*)(offset+HR_READINGS_H));
+	float wheelSize=eeprom_read_float((float*)(offset+WHEEL_SIZE));
 	
-	tripFinished = eeprom_read_byte((BYTE*)1);
-	numberOfTrips= eeprom_read_byte((BYTE*)0);	//little endian
+	//Now save that data in the trip below that one.
+	offset=INITIAL_OFFSET+(whichTrip-2)*BLOCK_SIZE;
+	eeprom_update_float((float*)(offset+AVESPEED),aveSpeed);
+	eeprom_update_float((float*)(offset+AVEHR),aveHR);
+	eeprom_update_float((float*)(offset+DISTANCE),distance);
+	eeprom_update_word((WORD *)(offset+START_DAYS),startDays);
+	eeprom_update_word((WORD *)(offset+START_YEAR),startYear);
+	eeprom_update_word((WORD *)(offset+MINUTES_ELAPSED),minutesElapsed);
+	eeprom_update_word((WORD *)(offset+DAYS_ELAPSED),daysElapsed);
+	eeprom_update_word((WORD *)(offset+YEARS_ELAPSED),yearsElapsed);
+	eeprom_update_word((WORD *)(offset+SPEED_READINGS_L),speedReadings_L);
+	eeprom_update_word((WORD *)(offset+SPEED_READINGS_H),speedReadings_H);
+	eeprom_update_word((WORD *)(offset+HR_READINGS_L),hrReadings_L);
+	eeprom_update_word((WORD *)(offset+HR_READINGS_H),hrReadings_H);
+	eeprom_update_float((float*)(offset+WHEEL_SIZE),wheelSize);
+}
+/*************************************************************************************************************/
+void DeleteTrip(BYTE whichTrip){
+	//Need to shift all trips down by one to that location.
+	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);
+	for (int i=whichTrip+1; i<=numberOfTrips; i++){
+		MoveTripDown(i);
+	}
+	numberOfTrips--;
+	eeprom_write_byte(&eeNumberOfTrips,numberOfTrips);		//store number of trips back now.
+}
+/*************************************************************************************************************/
+void EndTripEEPROM(){	
+	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);								//If there is one trip, then the offset should be 1 to get to where new data is stored,\
+																						offset is old value of numberOfTrips, then incremented to alert/store the new number of trips.
+	WORD offset=INITIAL_OFFSET+((numberOfTrips)*BLOCK_SIZE);	
+	numberOfTrips++;
+	eeprom_update_byte(&eeNumberOfTrips,numberOfTrips);									//Put the new amount of trips in the correct location
+	eeprom_update_byte(&eeTripFinished,FINISHED);										//say that the trip is done with a 1(True)
+	//Now get the necessary data and store in EEPROM.
+	eeprom_update_float((float*)(offset+AVESPEED),(float)globalTrip.getAverageSpeed());
+	eeprom_update_float((float*)(offset+AVEHR),(float)globalTrip.getAveHR());
+	eeprom_update_float((float*)(offset+DISTANCE),(float)globalTrip.getDistance());
+	eeprom_update_word((WORD *)(offset+START_DAYS),globalTrip.getStartDays());
+	eeprom_update_word((WORD *)(offset+START_YEAR),globalTrip.getStartYear());
+	eeprom_update_word((WORD *)(offset+MINUTES_ELAPSED),globalTrip.getMinutesElapsed());
+	eeprom_update_word((WORD *)(offset+DAYS_ELAPSED),globalTrip.getDaysElapsed());
+	eeprom_update_word((WORD *)(offset+YEARS_ELAPSED),globalTrip.getYearsElapsed());
+	eeprom_update_word((WORD *)(offset+SPEED_READINGS_L),globalTrip.getSpeedPointsLow());
+	eeprom_update_word((WORD *)(offset+SPEED_READINGS_H),globalTrip.getSpeedPointsHigh());
+	eeprom_update_word((WORD *)(offset+HR_READINGS_L),globalTrip.getHRReadingsLow());
+	eeprom_update_word((WORD *)(offset+HR_READINGS_H),globalTrip.getHRReadingsHigh());
+	eeprom_update_float((float*)(offset+WHEEL_SIZE),(float)globalTrip.getWheelSize());
+}
+/*************************************************************************************************************/
+void StartNewTripEEPROM(){
+	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);				//See how many trips there are currently stored in EEPROM. little endian
+	WORD theOffset=INITIAL_OFFSET+((numberOfTrips-1)*BLOCK_SIZE);		//This is the offset, used to get the last wheel size.
+	BYTE daysInMonths[12]={31,28,31,30,31,30,31,31,30,31,30,31};		//how many days are in each month
+	WORD totalDays=0, tempMonths=0;
 	
+	//Calculate how many days have been passed, only setting days, not months.	
+	totalDays=currentTime.getDays();									//get the total amount of days this month
+	tempMonths=currentTime.getMonths();									//get how many months have gone by
+	for (int i=0; i<tempMonths-1;i++){									//add all days of the months before the current, if we are in january, doesn't count any.
+		totalDays+=daysInMonths[i];
+	}
+	
+	//Get the last wheel size and then set the trip the correct way. Show the trip is now in progress 																			
+	float tempWheelSize=eeprom_read_float((float*)(theOffset+WHEEL_SIZE));							//Get the last trips wheel size. Probably haven't changed bikes.
+	globalTrip.setTripWTime((double)tempWheelSize, totalDays, currentTime.getYears());				//(re)set the trip, see "trip.h" for function
+	eeprom_update_byte(&eeTripFinished,UNFINISHED);													//Signify that the trip is indeed unfinished.
+	//Good to go, continue on.	
+}
+/*************************************************************************************************************/
+void LoadLastTripEEPROM(){
+	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);				//little endian
+	WORD offset=INITIAL_OFFSET+((numberOfTrips-1)*BLOCK_SIZE);
+	//Load the trip data from EEPROM based on the numberOfTrips. If numberOfTrips=3, need to load the third. AVESPEED for that trip is located at 2+(24*2)
+	WORD startDays,startYear,minutesElapsed,daysElapsed,yearsElapsed,speedReadings_L,speedReadings_H,hrReadings_L,hrReadings_H;
+	float aveSpeed=eeprom_read_float((float*)(offset+AVESPEED));
+	float aveHR=eeprom_read_float((float*)(offset+AVEHR));
+	float distance=eeprom_read_float((float*)(offset+DISTANCE));
+	startDays=eeprom_read_word((WORD*)(offset+START_DAYS));
+	startYear=eeprom_read_word((WORD*)(offset+START_YEAR));
+	minutesElapsed=eeprom_read_word((WORD*)(offset+MINUTES_ELAPSED));
+	daysElapsed=eeprom_read_word((WORD*)(offset+DAYS_ELAPSED));
+	yearsElapsed=eeprom_read_word((WORD*)(offset+YEARS_ELAPSED));
+	speedReadings_L=eeprom_read_word((WORD*)(offset+SPEED_READINGS_L));
+	speedReadings_H=eeprom_read_word((WORD*)(offset+SPEED_READINGS_H));	//2^16-1=65535, so 65535*this number + SPEED_READINGS_LOW
+	hrReadings_L=eeprom_read_word((WORD*)(offset+HR_READINGS_L));
+	hrReadings_H=eeprom_read_word((WORD*)(offset+HR_READINGS_H));
+	float wheelSize=eeprom_read_float((float*)(offset+WHEEL_SIZE));
+	//Set the current trip with these parameters now.
+	globalTrip.setOdometer((double)aveSpeed,
+						(double)distance,
+						(double)wheelSize,
+						speedReadings_L,
+						speedReadings_H,
+						minutesElapsed,
+						daysElapsed,
+						yearsElapsed,
+						startDays,
+						startYear
+						);
+	globalTrip.setHeartMonitor((double)aveHR, hrReadings_L, hrReadings_H);	
+}
+/*************************************************************************************************************/
+BOOL StartupTripEEPROM(){
+	//This is called when the AVR is rebooted/booted. It looks to see if the trip was finished, if it was then it starts a new trip. If not, it loads the old data
+	//from the previous trip and then sets the global trip to those statistics so it can resume.
+	BOOL tripFinished=eeprom_read_byte(&eeTripFinished);
 	if (tripFinished){
-		//Start a new trip
+		StartNewTripEEPROM();
+		return fTrue;
 	} else {
-		//Load the trip data from EEPROM based on the numberOfTrips. If numberOfTrips=3, need to load the third. AVESPEED for that trip is located at 2+(24*2)
-		WORD offset=2+((numberOfTrips-1)*24);
-		WORD aveSpeed, aveHR, distance,startDays,startYears,secondsInDay,daysElapsed,yearsElapsed,speedReadings_L,speedReadings_H,hrReadings_L,hrReadings_H;
-		aveSpeed=eeprom_read_word((WORD*)(offset+AVESPEED));
-		aveHR = eeprom_read_word((WORD*)(offset+AVEHR));
-		distance=eeprom_read_word((WORD*)(offset+DISTANCE));
-		startDays=eeprom_read_word((WORD*)(offset+START_DAYS));
-		startYears=eeprom_read_word((WORD*)(offset+START_YEARS));
-		secondsInDay=eeprom_read_word((WORD*)(offset+SECONDS_IN_DAY));
-		daysElapsed=eeprom_read_word((WORD*)(offset+DAYS_ELAPSED));
-		yearsElapsed=eeprom_read_word((WORD*)(offset+YEARS_ELAPSED));
-		speedReadings_L=eeprom_read_word((WORD*)(offset+SPEED_READINGS_L));
-		speedReadings_H=eeprom_read_word((WORD*)(offset+SPEED_READINGS_H));
-		hrReadings_L=eeprom_read_word((WORD*)(offset+HR_READINGS_L));
-		hrReadings_H=eeprom_read_word((WORD*)(offset+HR_READINGS_H));
-		
-		//Set the current trip with these parameters now.
+		LoadLastTripEEPROM();
+		return fFalse;
 	}//end if-else
 }
 
@@ -119,9 +245,9 @@ void saveDateTime_eeprom(BOOL sTime, BOOL sDate){
 		tempHour = currentTime.getHours();
 		tempMin = currentTime.getMinutes();
 		tempSec = currentTime.getSeconds();
-		eeprom_write_byte(&eeSecond,tempSec);
-		eeprom_write_byte(&eeMinute,tempMin);
-		eeprom_write_byte(&eeHour,tempHour);
+		eeprom_update_byte(&eeSecond,tempSec);
+		eeprom_update_byte(&eeMinute,tempMin);
+		eeprom_update_byte(&eeHour,tempHour);
 	}
 	if (sDate){
 		BYTE tempDay,tempMonth;
@@ -129,13 +255,11 @@ void saveDateTime_eeprom(BOOL sTime, BOOL sDate){
 		tempYear = currentTime.getYears();
 		tempMonth = currentTime.getMonths();
 		tempDay = currentTime.getDays();
-		eeprom_write_word(&eeYear,tempYear);
-		eeprom_write_byte(&eeMonth,tempMonth);
-		eeprom_write_byte(&eeDay,tempDay);
+		eeprom_update_word(&eeYear,tempYear);
+		eeprom_update_byte(&eeMonth,tempMonth);
+		eeprom_update_byte(&eeDay,tempDay);
 	}
 	sei();
 }
-
-/*************************************************************************************************************/
 
 /*************************************************************************************************************/

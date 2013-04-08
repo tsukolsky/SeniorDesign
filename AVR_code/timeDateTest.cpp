@@ -11,10 +11,11 @@ int main(){
 	cin >> recString;
 	int strLoc=strlen(recString);
 	cout << "strLoc=" << strLoc << endl;
-	int counter=0;
+	int counter=1;
 	int tempNum[3]={0,0,0}, tempNum1[3]={0,0,0},dmy=0, hms=0, placement=0;
 	//Look at string for all locations up to \0, \0 is needed to know when last digits are done
 	char tempStringNum[5];
+	for (int i=0; i<5; i++){tempStringNum[i]=(char)NULL;}
 	while (recString[counter] != '/' && recString[counter] != '\0'){
 		cout << "Evaluating \"" << recString[counter] << "\", with counter = " << counter << endl;
 		cout << "tempStringNum= " << tempStringNum << ",and hms= " << hms << endl;

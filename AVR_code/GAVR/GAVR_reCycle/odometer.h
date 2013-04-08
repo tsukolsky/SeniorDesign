@@ -3,8 +3,8 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 2/26/2013
-| Last Revised: 2/28/2013
-| Copyright of Todd Sukolsky and BU ECE Senior Design teamp Re.Cycle
+| Last Revised: 4/7/2013
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This class is defined as an odometer. Odometer functions include
 |	current speed, average speed, time and distance travelled. The "Trip" class
@@ -14,6 +14,8 @@
 |			  2/28: Changed a little of the functionality. Added initial time/date
 |					feature as well as time elapsed. Should be good, just needs
 |					optimizing now.
+|			  4/7:  Changed some declarations and added some get functions for resetting trip
+|					datas and such.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -26,44 +28,49 @@
 #define SECONDS_IN_HOUR 3600
 #define TIMER1_CLOCK_sec .000032
 
-#define __calculateSpeedWeight() speedWeight=speedPoints-1/speedPoints;
+#define __calculateSpeedWeight() speedWeight=((speedPoints_L-1)+speedPoints_H*65534)/(speedPoints_L+speedPoints_H*65534) 
 
 using namespace std;
-
-//The RTC being used.
-//extern theClock;
 
 class odometer{
 	public:
 		odometer();
-		void setNewOdometerWOtime(double wheelSize=DEFAULT_WHEEL_SIZE);											//New odometer without valid time
-		void setNewOdometerWtime(double wheelSize=DEFAULT_WHEEL_SIZE, unsigned int sDate=0, unsigned int sTime=0);	//New odometer with valid time
-		void setOdometer(double swapAveSpeed, double swapDistance, double swapCurrentSpeed, double swapWheelSize, unsigned int swapSpeedPoints,unsigned int timeElapsed,unsigned int sDate, unsigned int sTime);	//Had shutdown, set the odometer with all the statistics.	
-		/*Functions we need*\
-		void setOdometerTime(unsigned int sDate, unsigned int sTime, unsigned int timeElapsed);
-		\*******************/
-		void setWheelSize(double wheelSize);
-		void addSpeedDataPoint(unsigned int newDataPoint);
-		void resetSpeedPoints();
-		
-		//Get functions for normal odometer stuff
-		unsigned int getSpeedPoints();
+		unsigned int getSpeedPointsLow();
+		unsigned int getSpeedPointsHigh();
+		unsigned int getStartDays();
+		unsigned int getStartYear();
+		unsigned int getMinutesElapsed();
+		unsigned int getDaysElapsed();
+		unsigned int getYearsElapsed();
 		double getCurrentSpeed();
 		double getAverageSpeed();
 		double getDistance();
-		double getWheelSize();	
-		//Stuff for time and date
-		unsigned int getTotalTime(unsigned int eTime, unsigned int eDate);
-		
+		double getWheelSize();
+		void addSpeedDataPoint(unsigned int newDataPoint);
+		void resetSpeedPoints();
+		void setStartDate(unsigned int sDays, unsigned int sMonths, unsigned int sYear);
+		void setOdometer(double swapAveSpeed, double swapDistance,
+						double swapWheelSize, unsigned int swapSpeedPoints_L,
+						unsigned int swapSpeedPoints_H,unsigned int swapMinutesElapsed,
+						unsigned int swapDaysElapsed, unsigned int swapYearsElapsed,
+						unsigned int swapSDays, unsigned int swapSYear
+						);
+				
 	protected:
+		void setNewOdometerWOtime(double wheelSize=DEFAULT_WHEEL_SIZE);											//New odometer without valid time
+		void setNewOdometerWtime(double wheelSize=DEFAULT_WHEEL_SIZE, unsigned int sDate=0, unsigned int sTime=0);	//New odometer with valid time
+	
+		void setWheelSize(double wheelSize);
+
 		void resetOdometer();		//used by trip.h
+		//Get functions for normal odometer stuff
 
 	private:
 		double aveSpeed, distance, currentSpeed,wheelSize,speedWeight;
-		unsigned int sDate,sTime;
-		unsigned int timeElapsed;
+		unsigned int sDays, sYear;
+		unsigned int tripSeconds,tripMinutes, tripDays, tripYears;
 		unsigned int dataPoints[10];
-		unsigned int speedPoints;	//number of speed points
+		unsigned int speedPoints_L, speedPoints_H;	//number of speed points
 		BOOL firstRun, noSpeed;
 		void updateSpeeds();
 
@@ -83,10 +90,13 @@ void odometer::resetOdometer(){
 	distance=0;
 	currentSpeed=0;
 	speedWeight=0;
-	speedPoints=0;
-	sDate=0;
-	sTime=0;
-	timeElapsed=0;
+	speedPoints_L=0;
+	speedPoints_H=0;
+	sDays=0;
+	sYear=2013;
+	tripMinutes=0;
+	tripDays=0;
+	tripYears=0;
 	for (volatile int i=0; i<10; i++){
 		dataPoints[i]=0;
 	}
@@ -100,29 +110,49 @@ void odometer::setNewOdometerWOtime(double wheelSize){
 }
 
 //New Odometer with wheel size and accurate/valid date and time.
-void odometer::setNewOdometerWtime(double wheelSize, unsigned int sDate, unsigned int sTime){
-	this->wheelSize=wheelSize;
-	this->sDate=sDate;
-	this->sTime=sTime;
+void odometer::setNewOdometerWtime(double wheelSize, unsigned int sDays, unsigned int sYear){
 	resetOdometer();
+	this->wheelSize=wheelSize;
+	this->sDays=sDays;
+	this->sYear=sYear;
+}
+
+//The date was set just after startup/new trip creation.
+void odometer::setStartDate(unsigned int sDays, unsigned int sMonths, unsigned int sYear){
+	this->sYear=sYear;
+	unsigned int tempDays=sDays;
+	BYTE daysInMonths[12]={31,28,31,30,31,30,31,31,30,31,30,31};		//how many days are in each month
+	for (int i=0; i<sMonths-1; i++){
+		tempDays+=daysInMonths[i];										//add number of days in the months prior
+	}
+	this->sDays=tempDays;
 }
 
 //Restart of the module, need to set everything.
-void odometer::setOdometer(double swapAveSpeed, double swapDistance, double swapCurrentSpeed, double swapWheelSize, unsigned int swapSpeedPoints,unsigned int swapTimeElapsed,unsigned int swapSDate, unsigned int swapSTime){
+void odometer::setOdometer(double swapAveSpeed, double swapDistance, 
+						   double swapWheelSize, unsigned int swapSpeedPoints_L, 
+						   unsigned int swapSpeedPoints_H,unsigned int swapMinutesElapsed, 
+						   unsigned int swapDaysElapsed, unsigned int swapYearsElapsed,
+						   unsigned int swapSDays, unsigned int swapSYear)
+{
 	aveSpeed=swapAveSpeed;
 	distance=swapDistance;
-	currentSpeed=swapCurrentSpeed;
+	currentSpeed=0;
 	wheelSize=swapWheelSize;
-	speedPoints=swapSpeedPoints;
-	timeElapsed=swapTimeElapsed;
-	sDate=swapSDate;
-	sTime=swapSTime;
+	speedPoints_L=swapSpeedPoints_L;
+	speedPoints_H=swapSpeedPoints_H;
+	tripMinutes=swapMinutesElapsed;
+	tripDays=swapDaysElapsed;
+	tripYears=swapYearsElapsed;
+	sDays=swapSDays;
+	sYear=swapSYear;
 	firstRun=fTrue;
 }
 
 //New speed data point
 void odometer::addSpeedDataPoint(unsigned int newDataPoint){
-	//If this is first point or new wheelsize, or whatever, need to initialize all data points.
+	static BYTE counter=0;
+	//If this is first point or new wheelsize, or whatever, need to initialize all data points. 
 	if (firstRun || noSpeed){
 		for (volatile int j=0; j<10;j++){
 			dataPoints[j]=newDataPoint;
@@ -137,11 +167,26 @@ void odometer::addSpeedDataPoint(unsigned int newDataPoint){
 		}
 		dataPoints[9]=newDataPoint;		//add new data point
 	}
-	speedPoints++;					//increment speed points
-	distance+=wheelSize;			//increment distance.
-
+	if (++speedPoints_L >= 65534){speedPoints_H++; speedPoints_L=0;}				//increment speed points
+	
+	//Update distance traveled and time elapsed while riding.
+	distance+=wheelSize;			
+	tripSeconds += TIMER1_CLOCK_sec*newDataPoint;
+	if (tripSeconds/60 >=1){
+		tripMinutes+=tripSeconds/60;
+		if (tripMinutes/1440 >= 1){
+			tripDays++;
+			if (tripDays/365 >= 1){
+				tripYears++;
+			}
+		}
+	}
+	tripSeconds%=60;
+	tripMinutes%=1440;
+	tripDays%=365;
+	
 	//With new point we need to update all the statistics.
-	updateSpeeds();
+	if (counter++>=3){updateSpeeds(); counter=0;}
 }
 
 //The speed went to zero. Need to set flag for startup condition on new speed point, set currentSpeed to 0 so that if we are updating screen
@@ -172,7 +217,7 @@ void odometer::updateSpeeds(){
 	
 	//Update average speed
 	__calculateSpeedWeight();
-	aveSpeed=aveSpeed*speedWeight + currentSpeed/speedPoints;
+	aveSpeed=aveSpeed*speedWeight + currentSpeed/speedPoints_L;
 }
 
 //Get the current speed
@@ -194,19 +239,33 @@ double odometer::getWheelSize(){
 	return wheelSize;
 }
 	
-unsigned int odometer::getSpeedPoints(){
-	return speedPoints;
+unsigned int odometer::getSpeedPointsLow(){
+	return speedPoints_L;
 }
 
-unsigned int odometer::getTotalTime(unsigned int eDate, unsigned int eTime){
-	//Compute time between sDate/Time and eDate/Time, then add time elapsed.
-	return timeElapsed;
+unsigned int odometer::getSpeedPointsHigh(){
+	return speedPoints_H;
 }
 
+unsigned int odometer::getStartDays(){
+	return sDays;
+}
 
+unsigned int odometer::getStartYear(){
+	return sYear;
+}
 
+unsigned int odometer::getMinutesElapsed(){
+	return tripMinutes;
+}
 
+unsigned int odometer::getDaysElapsed(){
+	return tripDays;
+}
 
+unsigned int odometer::getYearsElapsed(){
+	return tripYears;
+}
 
 
 

@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 4/6/13
+| Last Revised: 4/7/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -43,6 +43,8 @@
 |				  function thoguh meaning the WAVR isn't getting our ACKW.
 |			4/5-4/6- Working on UART cleaning/transmission protocols. See "../../WAVR/WAVR/WAVR/myUart.h" and 
 |				  "../../WAVR/WAVR/WAVR/WAVR.cpp" for more information. Not going to double the comments.
+|			4/7- Added more flags for LCD input and a polling if statement for the LCDinput flag. Groundwork for
+|				  interfacing with it. Third block of flags for more information.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -50,6 +52,8 @@
 |				  Need to add flags that a teimtout occurred and we should try and send again? 
 |				  Could be global and at end of main while check, if high, raise normal flags.
 |				  ------->Revision completeted at 10:52PM, 3/27/13
+|			(2)4/7--- Turn all EEPROM trip functionality into the class options. Eliminates where it is
+|				  in the file and makes code much cleaner. This can be done after succsesful testing.
 |================================================================================
 | *NOTES: (1) This document is stored in the GIT repo @ https://github.com/tsukolsky/SeniorDesign.git/AVR_CODE/GAVR.
 |			  Development is also going on in that same repo ../HR_TEST for heart
@@ -74,13 +78,13 @@ using namespace std;
 #include <stdlib.h>
 #include <string.h>
 #include <avr/eeprom.h>
-#include <util/delay.h>
 #include "stdtypes.h"		//holds standard type definitions
 #include "myTime.h"			//myTime class, includes the myDate.h inherently
+#include "trip.h"
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
 #include "ATmega2560.h"
 #include "myUart.h"
-#include "trip.h"
+
 
 /*****************************************/
 /**			UART Frequency/BAUD			**/
@@ -141,7 +145,7 @@ BOOL justStarted, flagQUIT, flagGetUserClock, flagWAVRtime, flagGetWAVRtime, fla
 /*==============================================================================================================*/
 
 /*==============================================================================================================*/
-BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingForWAVR, flagWaitingForBone;
+BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingForWAVR, flagWaitingForBone, flagNewTripStartup;
 /* flagReceiveWAVR: We are receiving, or about to receive, transmission from WAVR								*/
 /* flagSendWAVR: Sending to WAVR, or about to. We need to ask the WAVR for date/time or send it the date and	*/
 /*				  time it asked for.																			*/
@@ -149,6 +153,21 @@ BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingFo
 /* flagSendBone: Sending to, or about to send, information to the Bone											*/
 /* flagWaitingForWAVR: Waiting to receive a UART string from WAVR, let main program know that with this flag.	*/
 /* flagWaitingForBone: Waiting to receive a UART string from the BONE, this alerts main program.				*/
+/* flagNewTripStartup: Whether or not a new trip was created on startup, or old trip was loaded. If new trip,	*/
+/*					need a date update from the WAVR before we can do anything (flag stays high until update).	*/
+/*					If false, will stay false until a reboot.													*/
+/*==============================================================================================================*/
+
+/*==============================================================================================================*/
+BOOL flagLCDinput, flagUSBinserted, flagUpdateWheelSize,flagTripOver, flagDeleteGAVRTrip, flagDeleteBoneTrip, flagOffloadTrip, flagNeedTrips;
+/* flagLCDinput: We are accepting input from the LCD.															*/
+/* flagUSBinserted: There is a USB stick inserted in the module, poll options to see if user wants to act.		*/
+/* flagUpdateWheelSize: User updated the wheel size, set the wheel size of the trip to this new one.			*/
+/* flagTripOver: User just stopped the current trip, set up a new one.											*/
+/* flagDeleteGAVRTrip: Deleting a trip in the GAVR EEPROM.														*/
+/* flagDeleteBoneTrip: Delete a trip on the BeagleBone.															*/
+/* flagOffloadTrip:	We are sending one of our trips to the BeagleBone.											*/
+/* flagNeedTrips: User wants to see the trips, ask for them.													*/ 
 /*==============================================================================================================*/
 
 
@@ -156,7 +175,7 @@ BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingFo
 /**			Global Variables			**/
 /*****************************************/
 myTime currentTime;			//The clock, must be global. Initiated as nothing.
-trip globalTrip;
+trip globalTrip;			//Trip must be global as well, initialed in normal way. Startup procedure sets it. 
 
 WORD numberOfSpeedOverflows=0;
 BOOL flagNoSpeed=fFalse;
@@ -197,7 +216,6 @@ ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over
 	flagWaitingForWAVR=fTrue;
 	UCSR1B |= (1 << RXCIE1);
 	__killCommINT();
-	char dummy=UDR1;
 	//Wait for UART0 signal now, otherwise do nothing
 	PrintWAVR("A.");		//A for ACK
 	prtDEBUGled &= ~(1 << bnDBG4);
@@ -210,7 +228,6 @@ ISR(INT1_vect){
 	flagWaitingForBone=fTrue;
 	UCSR0B |= (1 << RXCIE0);	//enable receiver 1
 	__killCommINT();
-	char dummy=UDR0;
 	PrintBone("A.");			//Ack from GAVR
 	sei();
 }
@@ -222,7 +239,7 @@ ISR(INT6_vect){
 	unsigned int value=TCNT1;
 	
 	prtDEBUGled |= (1 << bnDBG1);
-	Wait_ms(200);
+	Wait_ms(50);
 	if (flagNoSpeed){
 		flagNoSpeed=fFalse;
 		globalTrip.resetSpeedPoints();
@@ -263,7 +280,7 @@ ISR(TIMER0_COMPA_vect){
 ISR(TIMER1_OVF_vect){
 	cli();
 	if (numberOfSpeedOverflows++ > BAD_SPEED_THRESH && !flagNoSpeed){
-		//Let the INT0 know that on next interrupt it shouldn't calc speed, but initialize "speedPoints" in odometer class.
+		//Let the INT6 know that on next interrupt it shouldn't calc speed, but initialize "speedPoints" in odometer class.
 		flagNoSpeed=fTrue;
 		globalTrip.resetSpeedPoints();					//repetitive, done in the interrupt vector? Needs to be done twice just in case the wheel stops spinning.
 	}
@@ -321,17 +338,22 @@ int main(void)
 	getDateTime_eeprom(fTrue,fTrue);	//Get last saved date and time.
 //	initSpeedSensing();
 //	initHRSensing();
+	//Check the trip datas to see if there is something going on.
+//	flagNewTripStartup=StartupTripEEPROM();		//If a new trip is needed, calls it. Otherwise is loads a new one. True means a new one started.
 	sei();
     while(fTrue)
     {	
+		while (flagWaitingForWAVR && !flagReceiveWAVR);	//Block until we get what we want.
 		//Receiving from WAVR. Either a time string or asking user to set date/time/both.
-		if (flagReceiveWAVR && !flagQUIT){
+		if (flagReceiveWAVR && !flagQUIT && !flagReceiveBone){
 			prtDEBUGled2 |= (1 << bnDBG9);		//second from bottom, next to RTC...
 			ReceiveWAVR();
+			Wait_sec(2);
 			__enableCommINT();
 			prtDEBUGled2 &= ~(1 << bnDBG9);
 		}
 		
+		while (flagWaitingForBone && !flagReceiveBone);	//Block until we get what we want
 		//Receiving from the Bone. Could be a number of things. Needs to implement a state machine.
 		if (flagReceiveBone && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
@@ -347,7 +369,6 @@ int main(void)
 		if ((flagGetWAVRtime || flagUpdateWAVRtime) && !flagWaitingForWAVR && !flagQUIT){
 			prtDEBUGled |= (1 << bnDBG2);		//third from top.
 			__killCommINT();
-			Wait_ms(500);
 			PrintBone("Sending to WAVR.");
 			SendWAVR();
 			prtDEBUGled &= ~(1 << bnDBG2);	
@@ -360,17 +381,47 @@ int main(void)
 			//Get the time and date from the user
 			/* this is where we do that in LCD land. */
 			//if time/date valid, set, save,send
-			prtDEBUGled |= (1 << bnDBG7);
-			Wait_sec(1);
-			prtDEBUGled &= ~(1 << bnDBG7);
-			flagWaitingForWAVR=fFalse;
 			flagUpdateWAVRtime=fTrue;
 			flagGetUserClock=fFalse; 
 			flagWAVRtime=fFalse;
-			flagGetWAVRtime=fFalse;				//SendWAVR() will set the flags down accordingly
+			flagGetWAVRtime=fFalse;							//SendWAVR() will set the flags down accordingly
 			
 		}			
-				
+		
+/*		//Here is where we react to what the LCD gets as inputs.		
+		if (flagLCDinput){
+			if (flagUpdateWheelSize){
+				double tempWheelSize;
+				globalTrip.setWheelSize(tempWheelSize);
+			}				
+			if (flagTripOver){						//If the trip is over, end this one then start a new one.
+				EndTripEEPROM();
+				StartNewTripEEPROM();
+			}				
+			if (flagUSBinserted && (flagDeleteTrip || flagNeedTrips || flagOffloadTrip){
+				unsigned int whichGAVRTrip=1,whichBoneTrip=2;
+				//We want to view the trips, get them and push them onto a template stack.? or vector push?->Only looking at start date in first implementation(use char vector).
+				if (flagNeedTrips){
+					SendBone(0);
+				}
+				//Get which trip the user wants to offload and send it to the Bone
+				if (flagOffloadTrip && !flagDeleteBoneTrip){
+					SendBone(whichGAVRTrip);
+				//Tell the beaglebone to delete one of it's trips.
+				} else if (flagDeleteBoneTrip && !flagOffloadTrip){
+					SendBone(whichBoneTrip);
+				} else;
+				//If we need to delete a trip
+				if (flagDeleteTrip){
+					//delete the trip
+					DeleteTrip(whichGAVRTrip);
+					flagDeleteTrip=fFalse;
+				}
+			}//end if USBinserted && flagOffloatTrip
+			
+		}	*/
+		
+		//If shutdown is imminent, go bye-bye	
 		if (flagQUIT){
 			//Show that we know we are supposed to quit
 			cli();
@@ -464,6 +515,7 @@ void AppInit(unsigned int ubrr){
 	flagGetWAVRtime=fFalse;
 	flagInvalidDateTime=fFalse;
 	flagUpdateWAVRtime=fFalse;
+	//flagNewTripStartup=fFalse;
 	
 	flagReceiveWAVR=fFalse;
 	flagReceiveBone=fFalse;
@@ -495,13 +547,7 @@ void EnableRTCTimer(){
 
 
 /************************************************************************************************************/
-void Wait_sec(unsigned int delay){
-	volatile int startingTime = currentTime.getSeconds();
-	volatile int endingTime= (startingTime+delay)%60;
-	while (currentTime.getSeconds() != endingTime){asm volatile ("nop");}
-}
 
-/*************************************************************************************************************/
 void initSpeedSensing(){
 	//Initialize Timer 1(16-bit), counter is read on an interrupt to measure speed. assumes rider is going  above a certain speed for initial test.
 	PRR0 &= ~(1 << PRTIM1);

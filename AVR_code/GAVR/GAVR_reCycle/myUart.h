@@ -3,8 +3,8 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 3/3/2013
-| Last Revised: 4/6/2013
-| Copyright of Todd Sukolsky
+| Last Revised: 4/7/2013
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This file conatians the UART0 and UART1 basic send and receive routines used 
 |			by the Atmel family of microcontrollers
@@ -18,6 +18,14 @@
 |				  but first the startup procedure is going to be nailed down with trip statistics
 |				  saved in EEPROM that way the Procedure knows what to pull,send, etc.
 |			4/3-4/6- See "GAVR_reCycle.cpp" revision for '4/5-4/6'
+|			4/7-  In SendWAVR(), in receiving a message there was no flag set for "noCarriage=fFalse" so the
+|				  program kept looping. Oy vey, fixed that. Added extra flag 'flagNewTripStartup' that deals
+|				  with trip data syncrhonization. (2) Added "SendBone" routine that either tells bone to delete
+|				  one of it's trips, send it's trips over to view, or offload a trip to the bone. HTTP1.0, only
+|				  one request/tirp at a time and then connection is reset.
+|================================================================================
+| Revisions Needed:
+|		4/7: ReceiveBone() needs to be completed.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/
@@ -27,13 +35,24 @@
 #include <string.h>
 #include "stdtypes.h"
 
-//Declare external flags and clock.
-extern BOOL flagReceiveWAVR, flagReceiveBone, flagSendWAVR, flagSendBone, flagGetUserClock, flagWAVRtime, flagGetWAVRtime,justStarted, flagUpdateWAVRtime,flagWaitingForWAVR;
-extern BOOL flagInvalidDateTime;
+//Declare external flags, clock and trip.
+extern BOOL flagReceiveWAVR, flagReceiveBone, flagSendWAVR, flagSendBone, flagGetUserClock, flagWAVRtime, flagGetWAVRtime,justStarted;
+extern BOOL flagInvalidDateTime, flagNewTripStartup, flagUpdateWAVRtime,flagWaitingForWAVR;
+extern BOOL flagOffloadTrip, flagNeedTrips, flagDeleteBoneTrip;
 extern myTime currentTime;
+extern trip globalTrip;
 
 //Forward Declaration
 void printTimeDate(BOOL WAVRorBone, BOOL pTime, BOOL pDate);
+void Wait_sec(unsigned int delay);
+void Wait_ms(unsigned int delay);
+
+/*************************************************************************************************************/
+void Wait_sec(unsigned int delay){
+	volatile int startingTime = currentTime.getSeconds();
+	volatile int endingTime= (startingTime+delay)%60;
+while (currentTime.getSeconds() != endingTime){asm volatile ("nop");}
+}
 
 /*************************************************************************************************************/
 void Wait_ms(unsigned int delay)
@@ -47,6 +66,7 @@ void Wait_ms(unsigned int delay)
 		delay -= 1;
 	}
 }
+
 /**************************************************************************************************************/
 void PutUartChBone(char ch){
 	while (!(UCSR0A & (1 << UDRE0)));
@@ -113,7 +133,6 @@ void ReceiveWAVR(){
 			}
 		case 1: {
 			while (noCarriage && flagReceiveWAVR){
-				Wait_ms(100);		//WAVR is sending at increment of 300ms
 				while (!(UCSR1A & (1 << RXC1)) && flagReceiveWAVR);	//wait for this sucker to come in
 				if (!flagReceiveWAVR){PrintBone("TimeoutG-"); PrintBone(recString);state=0; break;}				//there was a timeout in that receive of character
 				recChar=UDR1;
@@ -202,6 +221,12 @@ void ReceiveWAVR(){
 				flagGetUserClock=fFalse;
 				flagWAVRtime=fTrue;
 				
+				//If a new trip was just started, and we just booted the system and asked for the time, or have an update to the time, reset the start day of that trip.
+				if (flagNewTripStartup){
+					flagNewTripStartup=fFalse;
+					globalTrip.setStartDate(tempNum1[0],tempNum1[1],tempNum1[2]);		//set the start date for the current trip, then be done with it.
+				}
+				
 				//send ACK
 				PrintBone("Set the time.");
 				recString[0]='A';
@@ -224,7 +249,6 @@ void ReceiveWAVR(){
 			//Do anythingi extra here for a reset.
 			flagReceiveWAVR=fFalse;
 			for (int i=0; i<=strLoc; i++){recString[i]=NULL;}
-			
 			break;
 		}
 		case 5:{
@@ -239,146 +263,63 @@ void ReceiveWAVR(){
 		default: {state=0; flagReceiveWAVR=fFalse; break;}
 			
 	}//end switch	
-	/*----------------------------------------------------------END STATE MACHINE--------------------------------------------------------------------------*/
-		
 	} //end while						
 }//end function
-	
-	
-/*************************************************************************************************************/
-void ReceiveBone(){
-	unsigned int state=0;
-	char recChar, recString[40];
-	unsigned int strLoc=0;
-	BOOL noCarriage=fTrue;
-	
-	while (flagReceiveBone){
-		/*************************************************************BEGIN STATE MACHINE************************************************/
-		/* State 0: Get the first character that was loaded in the buffer. If ., go to ACKERROR state, else go to state 1				*/
-		/* State 1: Get the rest of a string. If timeout, do nothing. Otherwise assemble. If overflow, go to ACKERROR, else go to state2*/
-		/* State 2: String parsing. See what it's asking for/giving. If command, return what it wants. If time, try and set the time.	*/
-		/*			If successful, go to successful transmission state 3, set corresponding flags based on WAVR state (startup/restart) */
-		/*			, else if not good string go to ACKBAD state 4.																		*/
-		/* State 3: Successful receive state. Print ACK<string> and then exit the loop													*/
-		/* State 4: ACKBAD, string it sent was not valid. Reply and exit loop.															*/
-		/* State 5: ACKERROR, invalid string or overflow. Say error then exit.															*/
-		/* State 6: Graceful exit. Exit from a command like adc or temp.																*/
-		/* State 7: Parse the input string for the time and date. Should be time(:)'/'date(,) where : and , are the delimiters. Term by */
-		/*			'.'																													*/
-		/********************************************************************************************************************************/
-		
-		switch(state){
-			case 0:{
-				//Get the first character. If a '.', exit to bad state.
-				strLoc=0;
-				recChar = UDR0;
-				if (recChar=='.'){
-					state=3;
-				} else  {recString[strLoc++]=recChar; state=1;}
-				break;
-			}//end case 0
-			case 1:{
-				while (noCarriage && flagReceiveBone){	//while there isn't a timeout and no carry
-					Wait_ms(80);
-					while ((!(UCSR0A & (1 << RXC0))) && flagReceiveBone);		//get the next character
-						if (!flagReceiveBone){state=4;break;}					//if there was a timeout, break out and reset state
-						recChar=UDR0;
-						recString[strLoc++]=recChar;
-						if (recChar == '.' || recChar=='\0'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
-						else if (strLoc >= 39){state=3;noCarriage=fFalse;}
-						else; //end if-elseif-else
-					}//end while
-					break;
-					}//end case 1
-				case 2:{
-					if (!strncmp(recString,"d.",2)){printTimeDate(fTrue,fFalse,fTrue); state=4;}
-					else if (!strncmp(recString,"t.",2)){printTimeDate(fTrue,fTrue,fFalse);state=4;}
-					else if (!strncmp(recString,"b.",2)){printTimeDate(fTrue,fTrue,fTrue);state=4;}
-					else if (!strncmp(recString,"s.",2)){saveDateTime_eeprom(fTrue,fFalse);PrintBone(recString);state=4;}		
-					else {state=3;}						
-					break;
-					}//end case 2
-				case 3:{
-					//Didn't get a good ack or there was an error.
-					Wait_ms(100);
-					PrintBone("E.");
-					flagReceiveBone=fFalse;
-					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
-					state=0;
-					break;
-					}//end case 5
-				case 4:{
-					//Graceful exit.
-					flagReceiveBone=fFalse;
-					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
-					state=0;
-					break;
-					}//end case 6						
-				default:{flagReceiveBone=fFalse; state=0;break;}
-			}//end switch
-	}//end while(flagUARTbone)	
-}//end ReceiveBone()
 /*************************************************************************************************************/
 void SendWAVR(){
 	//Declare variables to be used.
-	volatile static unsigned int state=0;
-	volatile BOOL noCarriage=fTrue;
+	BYTE state=0, strLoc=0;
+	BOOL noCarriage=fTrue;
 	char recChar, recString[40], sentString[40];
-	unsigned int strLoc=0;
 	
 	//Set Flag to begin
 	flagSendWAVR=fTrue;
 	
-	while (flagSendWAVR){		
-	/***************************************************************NEW METHOD-STATE MACHINE**********************************************************/
-	/** State 0: Send interrupt to WAVR that we are going to communicate. Go to state 1.															**/
-	/** State 1: Put together the incoming UART string. If a '.' is found, go to state 2 to parse the string. If overflow, exit to ACKERRO case 7.	**/
-	/** State 2: Find out what was said. If initial ACK, go to state 3 to figure out waht to send. If ACKNEED, the WAVR now knows we need the clock.**/
-	/**			 If it was the clock string we sent, but with ACK, exit. If ACKNO, we tried to send date/time, shouldn't have, ie WAVR has valid	**/
-	/**			 time so set flag to get the time and exit. If ACKBAD go to state 4, else state 5 whici is ACKERROR case/timeout					**/
-	/** State 3: If we need WAVRtime, send SYNNEED. If we are updating the WAVR, send the time and allocate the compare string for the ACK.			**/
-	/**			 Re-initialize variables then return to state 1 to find out waht ACK comes in.														**/
-	/** State 4: ACKBAD came in, make sure our date and time are valid. if not, set flag and exit. If they are valid, go to state 5 to enable a		**/
-	/**			 resend of information.																												**/
-	/** State 5: There was either ACKERROR, a timeout, or an error with validity that was wrong. Need to resend. Raise flag that to wait, kill send **/
-	/**			 flag to allow exiting of main while loop. At end of function, re-enable flagSendWAVR for the resend.								**/
-	/** State 6: Graceful exit																														**/
-	/** Defaulte: Set state, exit.																													**/
-	/*************************************************************************************************************************************************/
+	while (flagSendWAVR){
+		/***************************************************************NEW METHOD-STATE MACHINE**********************************************************/
+		/** State 0: Send interrupt to WAVR that we are going to communicate. Go to state 1.															**/
+		/** State 1: Put together the incoming UART string. If a '.' is found, go to state 2 to parse the string. If overflow, exit to ACKERRO case 7.	**/
+		/** State 2: Find out what was said. If initial ACK, go to state 3 to figure out waht to send. If ACKNEED, the WAVR now knows we need the clock.**/
+		/**			 If it was the clock string we sent, but with ACK, exit. If ACKNO, we tried to send date/time, shouldn't have, ie WAVR has valid	**/
+		/**			 time so set flag to get the time and exit. If ACKBAD go to state 4, else state 5 whici is ACKERROR case/timeout					**/
+		/** State 3: If we need WAVRtime, send SYNNEED. If we are updating the WAVR, send the time and allocate the compare string for the ACK.			**/
+		/**			 Re-initialize variables then return to state 1 to find out waht ACK comes in.														**/
+		/** State 4: ACKBAD came in, make sure our date and time are valid. if not, set flag and exit. If they are valid, go to state 5 to enable a		**/
+		/**			 resend of information.																												**/
+		/** State 5: There was either ACKERROR, a timeout, or an error with validity that was wrong. Need to resend. Raise flag that to wait, kill send **/
+		/**			 flag to allow exiting of main while loop. At end of function, re-enable flagSendWAVR for the resend.								**/
+		/** State 6: Graceful exit																														**/
+		/** Defaulte: Set state, exit.																													**/
+		/*************************************************************************************************************************************************/
 		
 		switch (state){
 			case 0:{
 				//Raise Interrupts
-				Wait_ms(1000);
+				Wait_sec(1);
 				prtWAVRINT |= (1 << bnWAVRINT);
 				for (int i=0; i<2; i++){asm ("nop");}
 				prtWAVRINT &= ~ (1 << bnWAVRINT);
 				state=1;
-				Wait_ms(1000);
 				break;
-				}//end case 0			
+				}//end case 0
 			case 1:{
-				Wait_ms(100);
+				Wait_ms(300);
 				//Put together the string that is being received
 				while (noCarriage && flagSendWAVR){
-					Wait_ms(100);
-					PrintBone("WaitingG.");
+					Wait_ms(50);
 					while (!(UCSR1A & (1 << RXC1)) && flagSendWAVR);
-					if (!flagSendWAVR){PrintBone("TimeoutG.");PrintBone(recString);state=0; break;}	//there was a timeout, don't do anything else. Flags aren't reset.
-					else {
-						recChar=UDR1;
-						unsigned int temp=(int)recChar;
-						recString[strLoc++]=recChar;
-						if (temp==46){recString[strLoc]='\0'; state=2;}
-						else if (strLoc >= 39){strLoc=0; noCarriage=fFalse; state=5;}			//Something went wrong putting together the message/ACK
-						else;
-					}					
+					if (!flagSendWAVR){PrintBone("TimeoutG.");PrintBone(recString);state=0; break;}					//there was a timeout, don't do anything else. Flags aren't reset.
+					recChar=UDR1;
+					recString[strLoc++]=recChar;
+					if (recChar=='.' || recChar=='\0'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}			//(4/7 Revision)Forgot to add noCarriage=fFalse;
+					else if (strLoc >= 39){strLoc=0; noCarriage=fFalse; state=5;}									//Something went wrong putting together the message/ACK
+					else;
 				}//end while (noCarriage && flagSendWAVR)
 				break;
 				}//end case 1
 			case 2:{
 				if (!strncmp(recString,"A.",2)){state=3;PrintBone("Got ACK.");}	//Ack
-				else if (!strncmp(recString,"N.",2)){PrintBone("Need.");/*Exit gracefully*/state=5; flagWaitingForWAVR=fTrue; flagGetWAVRtime=fTrue; flagUpdateWAVRtime=fFalse;}		//GAVR knows we need time, if it has it it will tell us. GetWAVRtime flag is already set, make sure it's up though.
+				else if (!strncmp(recString,"N.",2)){PrintBone("GAVR saw Need.");/*Exit gracefully*/state=5; flagWaitingForWAVR=fTrue; flagGetWAVRtime=fTrue; flagUpdateWAVRtime=fFalse;}		//GAVR knows we need time, if it has it it will tell us. GetWAVRtime flag is already set, make sure it's up though.
 				else if (!strcmp(recString,sentString)){state=6; flagUpdateWAVRtime=fFalse; flagGetWAVRtime=fFalse;}	//Got the correct user clock, we can kill that signal now since it was set.
 				else if (!strncmp(recString,"NO.",3)){state=6; flagGetWAVRtime=fTrue; flagUpdateWAVRtime=fFalse;}	//We shouldn't have sent anything, just exit. Maybe we should ask for the WAVR time now.
 				else if (!strncmp(recString,"B.",2)){state=4;} //check validitity of date and time
@@ -398,11 +339,13 @@ void SendWAVR(){
 					strcat(sentString,".\0");
 					PrintWAVR("S");
 					printTimeDate(fFalse,fTrue,fTrue);		//prints time and date to WAVR				
-				} else if (flagUpdateWAVRtime && flagGetWAVRtime){
+				} else if (flagUpdateWAVRtime && flagGetWAVRtime){			//if both are set, there was an error. Rason on the side of user stupidity
 					PrintWAVR("N.");
+					PrintBone("Both set.");
 					flagUpdateWAVRtime=fFalse;
-				} else if (!flagGetUserClock && !flagGetWAVRtime){
+				} else if (!flagUpdateWAVRtime && !flagGetWAVRtime){		//if both aren't set, do same as if both are set.
 					PrintWAVR("N.");
+					PrintBone("Both Set.");
 					flagGetWAVRtime=fTrue;
 				} else;
 			
@@ -441,7 +384,211 @@ void SendWAVR(){
 		}//end switch
 	}//end while(flagSendWAVR)	
 }//end function
+/*************************************************************************************************************/	
+void ReceiveBone(){
+	char recChar, recString[40];
+	BYTE strLoc=0, state=0;
+	BOOL noCarriage=fTrue;
+	
+	while (flagReceiveBone){
+		/*************************************************************BEGIN STATE MACHINE************************************************/
+		/* State 0: Get the first character that was loaded in the buffer. If ., go to ACKERROR state, else go to state 1				*/
+		/* State 1: Get the rest of a string. If timeout, do nothing. Otherwise assemble. If overflow, go to ACKERROR, else go to state2*/
+		/* State 2: String parsing. See what it's asking for/giving. If command, return what it wants. If time, try and set the time.	*/
+		/*			If successful, go to successful transmission state 3, set corresponding flags based on WAVR state (startup/restart) */
+		/*			, else if not good string go to ACKBAD state 4.																		*/
+		/* State 3: Successful receive state. Print ACK<string> and then exit the loop													*/
+		/* State 4: ACKBAD, string it sent was not valid. Reply and exit loop.															*/
+		/* State 5: ACKERROR, invalid string or overflow. Say error then exit.															*/
+		/* State 6: Graceful exit. Exit from a command like adc or temp.																*/
+		/* State 7: Parse the input string for the time and date. Should be time(:)'/'date(,) where : and , are the delimiters. Term by */
+		/*			'.'																													*/
+		/********************************************************************************************************************************/
+		
+		switch(state){
+			case 0:{
+				//Get the first character. If a '.', exit to bad state.
+				strLoc=0;
+				recChar = UDR0;
+				if (recChar=='.'){
+					state=3;
+				} else  {recString[strLoc++]=recChar; state=1;}
+				break;
+			}//end case 0
+			case 1:{
+				while (noCarriage && flagReceiveBone){	//while there isn't a timeout and no carry
+					while ((!(UCSR0A & (1 << RXC0))) && flagReceiveBone);		//get the next character
+						if (!flagReceiveBone){break;}					//if there was a timeout, break out and reset state
+						recChar=UDR0;
+						recString[strLoc++]=recChar;
+						if (recChar == '.' || recChar=='\0'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
+						else if (strLoc >= 39){state=3;noCarriage=fFalse;}
+						else; //end if-elseif-else
+				}//end while
+				break;
+				}//end case 1
+			case 2:{
+				if (!strncmp(recString,"d.",2)){printTimeDate(fTrue,fFalse,fTrue); state=4;}
+				else if (!strncmp(recString,"t.",2)){printTimeDate(fTrue,fTrue,fFalse);state=4;}
+				else if (!strncmp(recString,"b.",2)){printTimeDate(fTrue,fTrue,fTrue);state=4;}
+				else if (!strncmp(recString,"s.",2)){saveDateTime_eeprom(fTrue,fFalse);PrintBone(recString);state=4;}		
+				else {state=3;}						
+				break;
+				}//end case 2
+			case 3:{
+				//Didn't get a good ack or there was an error.
+				Wait_ms(100);
+				PrintBone("E.");
+				flagReceiveBone=fFalse;
+				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
+				state=0;
+				break;
+				}//end case 5
+			case 4:{
+				//Graceful exit.
+				flagReceiveBone=fFalse;
+				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
+				state=0;
+				break;
+				}//end case 6						
+			default:{flagReceiveBone=fFalse; state=0;break;}
+			}//end switch
+	}//end while(flagUARTbone)	
+}//end ReceiveBone()
 /*************************************************************************************************************/
+void SendBone(BYTE whichTrip){
+	char recChar, recString[20], checkString[2], sendString[20];
+	char *prefaceChar[8]={"SP","HR","DI","SD","SY","ME","DE","YE"};						//Speed, HeartRate, Distance, Start Day, Start Year, Minutes Elapsed, Days Elapsed, Years Elapsed
+	BYTE sendingWhat=0, state=0, strLoc=0;
+	BOOL noCarriage=fTrue;
+	WORD offset=0;
+	WORD startDays,startYear,minutesElapsed,daysElapsed,yearsElapsed;
+	float aveSpeed=0, aveHR=0, distance=0;
+	
+	//Dependent flags: flagDeleteBoneTrip, flagNeedTrips, flagOffloadTrip
+	if (whichTrip!=0){
+		//Get the trip data we need to send to the beaglebone. We are offloading trip data to the BeagleBone	WORD offset=2+((numberOfTrips-1)*26);
+		//Load the trip data from EEPROM based on the whichTrip. If whichTrip=3, need to load the third. AVESPEED for that trip is located at 2+(26*2)
+		offset=INITIAL_OFFSET+(whichTrip-1)*BLOCK_SIZE;
+		aveSpeed=eeprom_read_float((float*)(offset+AVESPEED));
+		aveHR=eeprom_read_float((float*)(offset+AVEHR));
+		distance=eeprom_read_float((float*)(offset+DISTANCE));
+		startDays=eeprom_read_word((WORD*)(offset+START_DAYS));
+		startYear=eeprom_read_word((WORD*)(offset+START_YEAR));
+		minutesElapsed=eeprom_read_word((WORD*)(offset+MINUTES_ELAPSED));
+		daysElapsed=eeprom_read_word((WORD*)(offset+DAYS_ELAPSED));
+		yearsElapsed=eeprom_read_word((WORD*)(offset+YEARS_ELAPSED));
+	} else; //We are not offloading anything to the BeagleBone, but we are viewing which trips are on there.
+	
+	flagSendBone=fTrue;
+	
+	while (flagSendBone){
+		switch(state){	
+			case 0:{
+				//Raise Interrupts
+				prtWAVRINT |= (1 << bnWAVRINT);
+				for (int i=0; i<2; i++){asm ("nop");}
+				prtWAVRINT &= ~ (1 << bnWAVRINT);
+				state=1;
+				break;
+			}//end case 0
+			case 1:{
+				Wait_ms(300);
+				//Put together the string that is being received
+				while (noCarriage && flagSendBone){
+					Wait_ms(100);
+					while (!(UCSR1A & (1 << RXC1)) && flagSendBone);
+					if (!flagSendWAVR){break;}	//there was a timeout, don't do anything else. Flags aren't reset.
+					recChar=UDR1;
+					recString[strLoc++]=recChar;
+					if (recChar=='.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}			//(4/7 Revision)Forgot to add noCarriage=fFalse;
+					else if (strLoc >= 39){strLoc=0; noCarriage=fFalse; state=6;}					//Something went wrong putting together the message/ACK
+					else;
+				}//end while (noCarriage && flagSendWAVR)
+				break;
+			}//end case 1			
+			case 2:{
+				if (flagOffloadTrip){
+					state=3;		//offload a trip, multiple acks coming. not worrying about data integrity, only that some information was send (only a few characters anyway.).
+				} else if (flagDeleteBoneTrip){	
+					state=9;		//tell bone which to delete
+				} else if (flagNeedTrips){
+					state=7;		//ask for trip data.			
+				}else {state=6;}	//ack errror
+				break;
+			}//end case 2
+			case 3:{
+				if (!strncmp(recString,"A.",2)){state=4;}					//Got initial ack, go send data back and forth
+				else if (!strcmp(recString,checkString)){state=4;}			//Bone received what it was supposed to.
+				else {state=5;}												//ERROR IN ACK case
+				break;
+			}//end case 3
+			case 4:{
+				//Go through what we are sending. 
+				if (sendingWhat < 8){
+					strcpy(checkString,prefaceChar[sendingWhat]);
+					PrintBone(prefaceChar[sendingWhat]);
+					switch (sendingWhat){
+						case 0:{dtostrf(aveSpeed,5,2,sendString);break;}
+						case 1:{dtostrf(aveHR,5,2,sendString);break;}
+						case 2:{dtostrf(distance,6,2,sendString);break;}		//Distance in miles.
+						case 3:{utoa(startDays,sendString,10);break;}
+						case 4:{utoa(startYear,sendString,10);break;}
+						case 5:{utoa(minutesElapsed,sendString,10);break;}
+						case 6:{utoa(daysElapsed,sendString,10);break;}
+						case 7:{utoa(yearsElapsed,sendString,10);break;}
+						default: {state=6;break;}	
+					}
+					PrintBone(sendString);
+					PutUartChBone('.');
+					sendingWhat++;
+					state=1;													//Go back to receive state.
+					
+				}//end if sendingWhat < 8
+				else {state=5;flagOffloadTrip=fTrue;}												//The correct thing what sent, ok to exit
+				break;
+			}				
+			case 5:{
+				flagSendBone=fFalse;
+				break;
+			}
+			case 6:{
+				PrintBone("E.");
+				state=5;
+				break;
+			}
+			case 7:{															//Ask for trips.
+				if (!strncmp(recString,"A.",2)){state=8;}						//Correct ACK, ask for trips, then exit
+				else if (!strncmp(recString,"NT.",3)){state=5;flagNeedTrips=fFalse;}					//Correct ACK from asking for trips, exit
+				else {state=6;}													//Go to Error case, then exit.		
+				break;
+			}
+			case 8:{
+				PrintBone("NT.");												//Ask Bone to send trips
+				state=1;														//Go back and wait for the string to come in
+				break;
+			}
+			case 9:{
+				if (!strncmp(recString,"A.",2)){state=10;}						//If initial ACK, go tell it which to delete, then exit
+				else if (!strcmp(recString,sendString)){state=5;flagDeleteBoneTrip=fFalse;}				//If we got what we sent, go exit without Error.
+				else {state=6;}													//If there was an error, exit the correct way.
+				break;
+			}
+			case 10:{
+				char tempChar[5];
+				utoa(whichTrip,tempChar,10);
+				strcpy(sendString,"D");
+				strcat(tempChar,".");
+				strcat(sendString,tempChar);
+				PrintBone(sendString);											//Should be something like "D4."
+				state=1;														//Go get the string that is returning.
+				break;
+			}
+			default: {flagSendBone=fFalse;break;}//default state
+		}//end switch
+	}//end while(flagSendBone)
+}//end SendBone
+
 /*************************************************************************************************************/
 
 //To print to WAVR, cariable needs to be false. Print to Bone requires WAVRorBone to be true

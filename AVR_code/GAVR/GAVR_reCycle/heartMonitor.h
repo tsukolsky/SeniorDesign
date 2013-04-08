@@ -3,16 +3,16 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 2/28/2013
-| Last Revised: 3/4/2013
-| Copyright of Todd Sukolsky and BU ECE Senior Design teamp Re.Cycle
+| Last Revised: 4/7/2013
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is a heartMonitor class that is used in the GAVR module. Used
 |		to track user heart rate and compile average heart rates. The "trip" class
 |		inherits from this class. See "trip.h".
 |--------------------------------------------------------------------------------
 | Revisions:  2/28: Initial build
-|			   3/1: Brought in functionality of HR sampling to the class.
-|			   3/4: Changed Heart Rate algorithm. Able to find the actual HR
+|			  3/1:	Brought in functionality of HR sampling to the class.
+|			  3/4:	Changed Heart Rate algorithm. Able to find the actual HR
 |					every three or four measurements. Currently implementing a 
 |					sliding window method to find maximas, however there is noise
 |					and the correct value does not always come out. One solution
@@ -20,6 +20,8 @@
 |					slope changes from positive to negative. Also, can find average of three-6
 |					points and measure against the average of another 6 points 3 points foward.
 |					If there is a jump, bingo. More later...
+|			  4/7:  Changed some declarations and added some get functions for resetting trip 
+|					datas and such.
 |================================================================================
 | *NOTES: HR is on a linear model, not polynomially biased with extra weighting
 \*******************************************************************************/
@@ -41,7 +43,7 @@
 #define DOWNWARD_SLOPE_MINUMUM 10
 #define SEC_PER_SAMPLE .008
 
-#define __calculateHRWeight() hrWeight=(numReadings-1)/numReadings;
+#define __calculateHRWeight() hrWeight=(numReadings_L-1+numReadings_H*65534)/(numReadings_L+numReadings_H*65534);
 
 using namespace std;
 
@@ -54,21 +56,20 @@ void PutUart0Ch(char ch);
 class heartMonitor{
 	public:
 		heartMonitor();
-		void resetMonitor();
-		void setHeartMonitor(double aveHR, unsigned int numReadings);
-		void setAveHR(double aveHR);
-		void setNumReadings(unsigned int numReadings);
-		void calculateHR(unsigned int *samples, int size);
 		double getAveHR();
 		double getCurrentHR();
-		unsigned int getNumReadings();
-	
+		unsigned int getHRReadingsLow();
+		unsigned int getHRReadingsHigh();
+		void setHeartMonitor(double aveHR, unsigned int numReadings_L, unsigned int numReadings_H);
+		void calculateHR(unsigned int *samples, int size);
+		
 	protected: 
 		void hardResetHR();				//used by trip.h
-		
+		void resetMonitor();
+
 	private:
 		double aveHR, currentHR, hrWeight;
-		unsigned int numReadings;
+		unsigned int numReadings_L, numReadings_H;
 		void softResetHR();
 		
 };
@@ -80,7 +81,8 @@ heartMonitor::heartMonitor(){
 //Resets everythin
 void heartMonitor::hardResetHR(){
 	currentHR=0;
-	numReadings=0;
+	numReadings_L=0;
+	numReadings_H=0;
 	aveHR=0;
 	__calculateHRWeight();
 }
@@ -91,18 +93,11 @@ void heartMonitor::softResetHR(){
 	__calculateHRWeight();
 }
 
-void heartMonitor::setHeartMonitor(double aveHR, unsigned int numReadings){
+void heartMonitor::setHeartMonitor(double aveHR, unsigned int numReadings_L, unsigned int numReadings_H){
 	this->aveHR=aveHR;
-	this->numReadings=numReadings;
+	this->numReadings_L=numReadings_L;
+	this->numReadings_H=numReadings_H;
 	softResetHR();
-}
-
-void heartMonitor::setAveHR(double aveHR){
-	this->aveHR=aveHR;
-}
-
-void heartMonitor::setNumReadings(unsigned int numReadings){
-	this->numReadings=numReadings;
 }
 
 double heartMonitor::getCurrentHR(){
@@ -113,8 +108,12 @@ double heartMonitor::getAveHR(){
 	return aveHR;
 }
 
-unsigned int heartMonitor::getNumReadings(){
-	return numReadings;
+unsigned int heartMonitor::getHRReadingsLow(){
+	return numReadings_L;
+}
+
+unsigned int heartMonitor::getHRReadingsHigh(){
+	return numReadings_H;
 }
 
 void heartMonitor::calculateHR(unsigned int *samples, int size){
@@ -217,7 +216,10 @@ void heartMonitor::calculateHR(unsigned int *samples, int size){
 		Print0(distanceString);*/
 		volatile double sampleTimeDifference=abs(placeOfAbsMax-currentHighPlace)*SEC_PER_SAMPLE;
 		currentHR=60/sampleTimeDifference;
-		numReadings++;
+		if (++numReadings_L>=65534){numReadings_H++;numReadings_L=0;}
+		//__calculateHRWeight();
+		//aveHR=(aveHR*hrWeight)+(currentHR/(numReadings_L+numReadings_H*65534));	
+		
 	} else {
 		volatile static unsigned int numZeros=0;
 		numZeros++;

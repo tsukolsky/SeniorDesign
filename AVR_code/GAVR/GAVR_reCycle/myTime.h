@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | Initial Build: 1/29/2013
 | Last Revised: 3/4/2013
-| Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the Time class that will keep the realTimeClock. it is in 24
 |			   hour setting based on EastCoast standard time. This inherits from Date class

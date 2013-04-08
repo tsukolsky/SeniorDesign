@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | Initial Build: 1/29/2013
 | Last Revised: 3/4/2013
-| Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: Stores current date
 |--------------------------------------------------------------------------------
