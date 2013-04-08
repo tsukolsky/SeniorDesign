@@ -45,6 +45,8 @@
 |				  "../../WAVR/WAVR/WAVR/WAVR.cpp" for more information. Not going to double the comments.
 |			4/7- Added more flags for LCD input and a polling if statement for the LCDinput flag. Groundwork for
 |				  interfacing with it. Third block of flags for more information.
+|			4/8- All UART tranmissions except receiveBone work. Changed around Receive/Send if blocks/polls in
+|				 main loop to allow for specific instructions to take place. Works.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -97,7 +99,7 @@ using namespace std;
 /**			TIMEOUT DEFINITIONS			**/
 /*****************************************/
 #define COMM_TIMEOUT_SEC 8
-#define STARTUP_TIMEOUT_SEC 40
+#define STARTUP_TIMEOUT_SEC 120
 
 /*****************************************/
 /**			Interrupt Macros			**/
@@ -179,8 +181,8 @@ trip globalTrip;			//Trip must be global as well, initialed in normal way. Start
 
 WORD numberOfSpeedOverflows=0;
 BOOL flagNoSpeed=fFalse;
-BOOL updateScreen=fFalse;
-unsigned int HRSAMPLES[300];
+BOOL flagShowStats=fFalse;
+WORD HRSAMPLES[300];
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 //ISR for beaglebone uart input
@@ -214,10 +216,10 @@ ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over
 	cli();
 	prtDEBUGled|= (1 << bnDBG4);
 	flagWaitingForWAVR=fTrue;
-	UCSR1B |= (1 << RXCIE1);
 	__killCommINT();
 	//Wait for UART0 signal now, otherwise do nothing
 	PrintWAVR("A.");		//A for ACK
+	UCSR1B |= (1 << RXCIE1);
 	prtDEBUGled &= ~(1 << bnDBG4);
 	sei();
 }
@@ -236,19 +238,21 @@ ISR(INT1_vect){
 ISR(INT6_vect){
 	//Do something with speed/odometer/trip thing.
 	cli();
-	unsigned int value=TCNT1;
-	
-	prtDEBUGled |= (1 << bnDBG1);
-	Wait_ms(50);
-	if (flagNoSpeed){
-		flagNoSpeed=fFalse;
-		globalTrip.resetSpeedPoints();
-	} else {
-		globalTrip.addSpeedDataPoint(value+numberOfSpeedOverflows*TIMER1_OFFSET);
-	}
-	numberOfSpeedOverflows=0;	
-	
-	prtDEBUGled &= ~(1 << bnDBG1);
+	WORD value=TCNT1;
+	static int counter=0;
+	if (value > 2){
+		prtDEBUGled |= (1 << bnDBG1);
+		if (flagNoSpeed){
+			flagNoSpeed=fFalse;
+			globalTrip.resetSpeedPoints();
+		} else {
+			globalTrip.addSpeedDataPoint(value+numberOfSpeedOverflows*TIMER1_OFFSET);
+		}
+		numberOfSpeedOverflows=0;	
+		if (counter++ >= 9){flagShowStats=fTrue;counter=0;}
+		Wait_ms(50);
+		prtDEBUGled &= ~(1 << bnDBG1);
+	}	
 	TCNT1=0x00;
 	sei();
 }
@@ -312,17 +316,16 @@ ISR(TIMER2_OVF_vect){
 	else if (!flagSendWAVR && sendingWAVRtimeout > 0){sendingWAVRtimeout=0;}
 	else;
 	
-	/*
 	//If we just started, increment the startUpTimeout value. When it hits 30, logic goes into place for user to enter time and date
 	if (justStarted && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
 	else if (justStarted && startupTimeout > STARTUP_TIMEOUT_SEC){
 		startupTimeout=0; 
-		justStarted=0;
+		justStarted=fFalse;
 		if (!flagWAVRtime){flagGetWAVRtime=fTrue;}				//if we haven't gotten the date and time from WAVR yet, say that we need it.
 		else {flagGetWAVRtime=fFalse;}							//make sure it's low. not really necessary.
 	}	
 	else if (!justStarted && startupTimeout > 0){startupTimeout=0;}
-	else;*/
+	else;
 	
 }
 
@@ -336,32 +339,36 @@ int main(void)
 	AppInit(MYUBRR);	//initializes pins for our setting
 	EnableRTCTimer();	//RTC
 	getDateTime_eeprom(fTrue,fTrue);	//Get last saved date and time.
-//	initSpeedSensing();
+	initSpeedSensing();
 //	initHRSensing();
 	//Check the trip datas to see if there is something going on.
-//	flagNewTripStartup=StartupTripEEPROM();		//If a new trip is needed, calls it. Otherwise is loads a new one. True means a new one started.
+	flagNewTripStartup=StartupTripEEPROM();		//If a new trip is needed, calls it. Otherwise is loads a new one. True means a new one started.
+	Wait_sec(2);
+	if (flagNewTripStartup){PrintBone("Resuming an old trip");}
+	else {PrintBone("Starting a new trip");}
 	sei();
     while(fTrue)
     {	
-		while (flagWaitingForWAVR && !flagReceiveWAVR);	//Block until we get what we want.
 		//Receiving from WAVR. Either a time string or asking user to set date/time/both.
 		if (flagReceiveWAVR && !flagQUIT && !flagReceiveBone){
 			prtDEBUGled2 |= (1 << bnDBG9);		//second from bottom, next to RTC...
 			ReceiveWAVR();
 			Wait_sec(2);
-			__enableCommINT();
+			if (!flagReceiveBone && !flagWaitingForBone){		//re enable comm interrupts only if we aren't waiting for one currently, or are about to go into one.
+				__enableCommINT();
+			}
 			prtDEBUGled2 &= ~(1 << bnDBG9);
 		}
 		
-		while (flagWaitingForBone && !flagReceiveBone);	//Block until we get what we want
-		//Receiving from the Bone. Could be a number of things. Needs to implement a state machine.
+		//Receiving from the Bone. Bone has priority over WAVR
 		if (flagReceiveBone && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
 			ReceiveBone();
-			flagReceiveBone=fFalse;
-			prtDEBUGled2 &= ~(1 << bnDBG8);	
 			Wait_sec(2);
-			__enableCommINT();
+			if (!flagReceiveWAVR && !flagWaitingForWAVR){
+				__enableCommINT();
+			}
+			prtDEBUGled2 &= ~(1 << bnDBG8);	
 		}		
 			
 		
@@ -370,10 +377,12 @@ int main(void)
 			prtDEBUGled |= (1 << bnDBG2);		//third from top.
 			__killCommINT();
 			PrintBone("Sending to WAVR.");
-			SendWAVR();
-			prtDEBUGled &= ~(1 << bnDBG2);	
+			SendWAVR();	
 			Wait_sec(2);
-			__enableCommINT();
+			if (!flagReceiveWAVR && !flagWaitingForWAVR && !flagReceiveBone && !flagWaitingForBone){
+				__enableCommINT();
+			}	
+			prtDEBUGled &= ~(1 << bnDBG2);		
 		}
 		
 		//WAVR hasn't updated the time, need to get it from user...make sure WAVR isn't about to send the time, or waiting to
@@ -388,6 +397,36 @@ int main(void)
 			
 		}			
 		
+		if (flagShowStats && !flagWaitingForBone && !flagWaitingForWAVR && !flagReceiveBone && !flagReceiveWAVR && !flagQUIT){
+			cli();
+			flagShowStats=0;
+			double speed=globalTrip.getCurrentSpeed();
+			double aveSpeed=globalTrip.getAverageSpeed();
+			double distance=globalTrip.getDistance();
+			double currentHR=globalTrip.getCurrentHR();
+			double averageHR=globalTrip.getAveHR();
+			char speedString[8],aveSpeedString[8],distanceString[8],currentHRstring[8],aveHRstring[8];
+			PrintBone("***");
+			PrintBone("Time/Date:");
+			printTimeDate(fTrue,fTrue,fTrue);
+			dtostrf(speed,5,3,speedString);
+			dtostrf(aveSpeed,5,3,aveSpeedString);
+			dtostrf(distance,7,4,distanceString);
+			dtostrf(currentHR,4,2,currentHRstring);
+			dtostrf(averageHR,4,2,aveHRstring);
+			PrintBone("--Sp:");
+			PrintBone(speedString);
+			PrintBone("--AvSp:");
+			PrintBone(aveSpeedString);
+			PrintBone("--Di:");
+			PrintBone(distanceString);
+			PrintBone("--HR:");
+			PrintBone(currentHRstring);
+			PrintBone("--AvHR:");
+			PrintBone(aveHRstring);
+			PrintBone("*** ");
+			sei();
+		}
 /*		//Here is where we react to what the LCD gets as inputs.		
 		if (flagLCDinput){
 			if (flagUpdateWheelSize){
@@ -423,15 +462,15 @@ int main(void)
 		
 		//If shutdown is imminent, go bye-bye	
 		if (flagQUIT){
-			//Show that we know we are supposed to quit
 			cli();
+			//Save all trip date into EEPROM with "unfinished/finished" label.
+			SaveTripSHUTDOWN();
+			//Show that we know we are supposed to quit
 			prtDEBUGled |= (1 << bnDBG0);
 			Wait_ms(500);
 			prtDEBUGled = 0x00;
 			prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
-			prtWAVRio &= ~(1 << bnG0W3);
-			//Save all trip date into EEPROM with "unfinished/finished" label.
-			
+			prtWAVRio &= ~(1 << bnG0W3);		
 			//Power Down
 			SMCR = (1 << SM1);		//power down mode
 			SMCR |= (1 << SE);		//enable sleep
@@ -439,6 +478,7 @@ int main(void)
 			asm volatile("SLEEP");	//go to sleep
 		}		
 		
+		//IF we have an invalid time, ask the WAVR for a time.
 		if (flagInvalidDateTime){
 			flagGetWAVRtime=fTrue;
 		}						

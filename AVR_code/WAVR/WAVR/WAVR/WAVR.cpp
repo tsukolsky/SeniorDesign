@@ -102,7 +102,7 @@ using namespace std;
 
 //Declare timeout value
 #define COMM_TIMEOUT_SEC	8
-#define STARTUP_TIMEOUT_SEC	12
+#define STARTUP_TIMEOUT_SEC	60
 
 //Sleep and Run Timing constants
 #define SLEEP_TICKS_HIGHV	10				//sleeps for 20 seconds when battery is good to go
@@ -159,6 +159,8 @@ BOOL flagGoToSleep, flagReceivingBone,flagNormalMode,flagReceivingGAVR,flagWaiti
 /* flagReceivingWAVR: receiving info from the GAVR																*/
 /* flagWaitingForReceiveGAVR: waiting to get the date/time from the GAVR, flagUserDate/flagUserTime is set...	*/
 /*								--this flag is set once the SendGAVR() is complete with a need to get date/time */
+/* flagWaitingForSYNBone:	*/
+/* flagWaitingForSYNGAVR:	*/
 /*==============================================================================================================*/
 
 
@@ -192,7 +194,6 @@ ISR(PCINT2_vect){
 		__killCommINT();
 		//Do work, correct interrupt
 		UCSR1B |= (1 << RXCIE1);
-		sei();
 		flagGoToSleep=fFalse;
 		flagNormalMode=fFalse;
 		flagWaitingForSYNGAVR=fTrue;
@@ -209,7 +210,6 @@ ISR(INT2_vect){	//about to get time, get things ready
 		flagGoToSleep=fFalse;	//no sleeping, wait for UART_RX
 		flagNormalMode=fFalse;
 		flagWaitingForSYNBone=fTrue;
-		flagReceivingBone=fFalse;
 		__killCommINT();
 		//Acknowledge connection, disable INT2_vect
 		PrintBone("A.");
@@ -297,8 +297,8 @@ int main(void)
 	InitBools();
 	getDateTime_eeprom(fTrue,fTrue);
 	//Prep/make sure power/temp is good
-	Wait_ms(2000);
-	//GetTemp();
+	Wait_sec(2);
+	GetTemp();
 	TakeADC();
 	flagGoodTemp=fTrue;
 	if (flagGoodVolts && flagGoodTemp){				//Good to power on system
@@ -317,33 +317,38 @@ int main(void)
 	while(fTrue)
 	{		
 		//If receiving UART string, go get rest of it.
-		if (flagReceivingBone){
+		if (flagReceivingBone && !flagReceivingGAVR){
 			ReceiveBone();
 			Wait_sec(4);
-			__enableCommINT();
-			flagGoToSleep=fTrue;
-			flagNormalMode=fTrue;
+			if (!flagReceivingGAVR){
+				__enableCommINT();
+				flagGoToSleep=fTrue;
+				flagNormalMode=fTrue;
+			} //Otherwise, keep the CommInts down...			
 		}//end flag Receiving from Bone 
 		
-		//Receiving Data/Signals from GAVR
-		if (flagReceivingGAVR && !flagReceivingBone){
+		//Receiving Data/Signals from GAVR. GAVR has the priority
+		if (flagReceivingGAVR){
 			PrintBone("Receiving from WAVR.");
 			ReceiveGAVR();
-			Wait_sec(4);			
-			__enableCommINT();	
-			if (!flagReceivingBone){
+			Wait_sec(4);	
+			if (!flagReceivingBone){		
+				__enableCommINT();	
 				flagGoToSleep=fTrue;
 				flagNormalMode=fTrue;
 			}
 		}//end flag Receiving from GAVR case
 		
 		//Communication with GAVR. Either updating the date/time on it or asking for date and time. The internal send machine deals with the flags.
-		if ((flagUpdateGAVRClock  || flagUserClock) && !flagWaitingForReceiveGAVR && !flagReceivingBone && !flagReceivingGAVR){
+		if ((flagUpdateGAVRClock  || flagUserClock) && !flagWaitingForReceiveGAVR && !flagReceivingBone && !flagReceivingGAVR && !flagWaitingForSYNGAVR && !flagWaitingForSYNBone){
 			PrintBone("SendingG.");
-			__killCommINT();
 			sendGAVR();
 			Wait_sec(4);
-			__enableCommINT();
+			if (!flagReceivingGAVR && !flagReceivingBone){
+				__enableCommINT();
+				flagGoToSleep=fTrue;
+				flagNormalMode=fTrue;
+			}			
 		}//end send to GAVR case
 
 		//When to save to EEPROM. Saves time on lower half of the hour, saves data and time on lower half-hour of midday.
@@ -360,7 +365,7 @@ int main(void)
 		//Take ADC reading to check battery level, temp to check board temperature.
 		if (flagNormalMode){
 			TakeADC();
-			//GetTemp();
+			GetTemp();
 			flagGoodTemp=fTrue;
 			//If both are good & shutdown is low, keep it low. If shutdown is high, pull low and enable restart
 			if (flagGoodVolts && flagGoodTemp){
@@ -400,7 +405,7 @@ int main(void)
 		}//end restart		
 		
 		//If it's time to go to sleep, go to sleep. INT0 or TIM2_overflow will wake it up.
-		if (flagGoToSleep && !flagUserClock){GoToSleep(flagShutdown);}
+		if (flagGoToSleep && (!flagUserClock || !flagUpdateGAVRClock)){GoToSleep(flagShutdown);}
 		
 		//Add logic for an invalid date and time somehow getting in here
 		if (flagInvalidDateTime && !flagShutdown){
@@ -677,13 +682,9 @@ void PowerUp(WORD interval){
 	__enableGPSandGAVR();
 	//Wait_sec(interval);
 	//while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
-	if (restart){
-		prtInterrupts |= (1 << bnGAVRint);
-		Wait_ms(200); 
-		prtInterrupts  &= ~(1 << bnGAVRint);	//sends interrupt to come out of power-down, waits, goes forward.
-	}
+
 	//Power on LCD
-	//__enableLCD();
+	__enableLCD();
 	Wait_sec(interval);
 	
 	__enableCommINT();

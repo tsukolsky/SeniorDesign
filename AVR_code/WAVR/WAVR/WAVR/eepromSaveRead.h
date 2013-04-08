@@ -22,11 +22,11 @@ using namespace std;
 extern myTime currentTime;
 
 //EEPROM variables
-BYTE EEMEM eeHour = 5;
-BYTE EEMEM eeMinute = 31;
+BYTE EEMEM eeHour = 6;
+BYTE EEMEM eeMinute = 35;
 BYTE EEMEM eeSecond = 0;
-BYTE EEMEM eeMonth = 3;
-BYTE EEMEM eeDay = 31;
+BYTE EEMEM eeMonth = 4;
+BYTE EEMEM eeDay = 8;
 WORD EEMEM eeYear = 2013;
 
 

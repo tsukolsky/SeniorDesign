@@ -67,7 +67,7 @@ BYTE EEMEM eeMonth = 4;						//location 3
 BYTE EEMEM eeDay = 1;						//location 4
 WORD EEMEM eeYear = 2013;					//location {6,5}
 BYTE EEMEM eeTripFinished = 1;				//location 7 
-BYTE EEMEM eeNumberOfTrips = 0;				//location 8 
+BYTE EEMEM eeNumberOfTrips = 1;				//location 8. Always one trip...
 /*************************************************************************************************************/
 void MoveTripDown(BYTE whichTrip){
 	//First, get the trip that we are moving
@@ -117,7 +117,7 @@ void DeleteTrip(BYTE whichTrip){
 void EndTripEEPROM(){	
 	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);								//If there is one trip, then the offset should be 1 to get to where new data is stored,\
 																						offset is old value of numberOfTrips, then incremented to alert/store the new number of trips.
-	WORD offset=INITIAL_OFFSET+((numberOfTrips)*BLOCK_SIZE);	
+	WORD offset=INITIAL_OFFSET+((numberOfTrips-1)*BLOCK_SIZE);	
 	numberOfTrips++;
 	eeprom_update_byte(&eeNumberOfTrips,numberOfTrips);									//Put the new amount of trips in the correct location
 	eeprom_update_byte(&eeTripFinished,FINISHED);										//say that the trip is done with a 1(True)
@@ -150,11 +150,18 @@ void StartNewTripEEPROM(){
 		totalDays+=daysInMonths[i];
 	}
 	
-	//Get the last wheel size and then set the trip the correct way. Show the trip is now in progress 																			
-	float tempWheelSize=eeprom_read_float((float*)(theOffset+WHEEL_SIZE));							//Get the last trips wheel size. Probably haven't changed bikes.
+	//Get the last wheel size and then set the trip the correct way. Show the trip is now in progress
+	double tempWheelSize; 																			
+	if (numberOfTrips > 1){tempWheelSize=(double)eeprom_read_float((float*)(theOffset+WHEEL_SIZE));}
+	else {tempWheelSize=0;}							//Get the last trips wheel size. Probably haven't changed bikes.
 	globalTrip.setTripWTime((double)tempWheelSize, totalDays, currentTime.getYears());				//(re)set the trip, see "trip.h" for function
 	eeprom_update_byte(&eeTripFinished,UNFINISHED);													//Signify that the trip is indeed unfinished.
 	//Good to go, continue on.	
+}
+/*************************************************************************************************************/
+void SaveTripSHUTDOWN(){
+	EndTripEEPROM();
+	eeprom_update_byte(&eeTripFinished,UNFINISHED);
 }
 /*************************************************************************************************************/
 void LoadLastTripEEPROM(){

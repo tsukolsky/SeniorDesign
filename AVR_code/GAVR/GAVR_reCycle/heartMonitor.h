@@ -43,7 +43,7 @@
 #define DOWNWARD_SLOPE_MINUMUM 10
 #define SEC_PER_SAMPLE .008
 
-#define __calculateHRWeight() hrWeight=(numReadings_L-1+numReadings_H*65534)/(numReadings_L+numReadings_H*65534);
+#define __calculateHRWeight() hrWeight=(numReadings_L-1)/(numReadings_L);
 
 using namespace std;
 
@@ -56,19 +56,19 @@ void PutUart0Ch(char ch);
 class heartMonitor{
 	public:
 		heartMonitor();
-		double getAveHR();
-		double getCurrentHR();
+		float getAveHR();
+		float getCurrentHR();
 		unsigned int getHRReadingsLow();
 		unsigned int getHRReadingsHigh();
-		void setHeartMonitor(double aveHR, unsigned int numReadings_L, unsigned int numReadings_H);
-		void calculateHR(unsigned int *samples, int size);
+		void setHeartMonitor(float aveHR, unsigned int numReadings_L, unsigned int numReadings_H);
+		void calculateHR(WORD *samples, int size);
 		
 	protected: 
 		void hardResetHR();				//used by trip.h
 		void resetMonitor();
 
 	private:
-		double aveHR, currentHR, hrWeight;
+		float aveHR, currentHR, hrWeight;
 		unsigned int numReadings_L, numReadings_H;
 		void softResetHR();
 		
@@ -93,18 +93,18 @@ void heartMonitor::softResetHR(){
 	__calculateHRWeight();
 }
 
-void heartMonitor::setHeartMonitor(double aveHR, unsigned int numReadings_L, unsigned int numReadings_H){
+void heartMonitor::setHeartMonitor(float aveHR, unsigned int numReadings_L, unsigned int numReadings_H){
 	this->aveHR=aveHR;
 	this->numReadings_L=numReadings_L;
 	this->numReadings_H=numReadings_H;
 	softResetHR();
 }
 
-double heartMonitor::getCurrentHR(){
+float heartMonitor::getCurrentHR(){
 	return currentHR;
 }
 
-double heartMonitor::getAveHR(){
+float heartMonitor::getAveHR(){
 	return aveHR;
 }
 
@@ -116,7 +116,7 @@ unsigned int heartMonitor::getHRReadingsHigh(){
 	return numReadings_H;
 }
 
-void heartMonitor::calculateHR(unsigned int *samples, int size){
+void heartMonitor::calculateHR(WORD *samples, int size){
 	//Search for max and min values in entire array.
 	volatile WORD currentMax=0, currentMax2=0;
 	volatile BYTE placeOfAbsMax=0, placeOfAbsMax2=0;
@@ -214,11 +214,13 @@ void heartMonitor::calculateHR(unsigned int *samples, int size){
 		distanceString[4]='\0';
 		Print0("d=");
 		Print0(distanceString);*/
-		volatile double sampleTimeDifference=abs(placeOfAbsMax-currentHighPlace)*SEC_PER_SAMPLE;
-		currentHR=60/sampleTimeDifference;
-		if (++numReadings_L>=65534){numReadings_H++;numReadings_L=0;}
-		//__calculateHRWeight();
-		//aveHR=(aveHR*hrWeight)+(currentHR/(numReadings_L+numReadings_H*65534));	
+		float sampleTimeDifference=abs(placeOfAbsMax-currentHighPlace)*SEC_PER_SAMPLE;
+		currentHR=60.0/sampleTimeDifference;
+		//if (++numReadings_L>=65534){numReadings_H++;numReadings_L=0;}
+		numReadings_L++;
+		if (numReadings_L==65534){numReadings_L=0;}
+		__calculateHRWeight();
+		aveHR=(aveHR*hrWeight)+(currentHR/numReadings_L);	
 		
 	} else {
 		volatile static unsigned int numZeros=0;

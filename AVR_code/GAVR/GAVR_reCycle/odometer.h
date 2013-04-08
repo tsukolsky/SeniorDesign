@@ -28,7 +28,9 @@
 #define SECONDS_IN_HOUR 3600
 #define TIMER1_CLOCK_sec .000032
 
-#define __calculateSpeedWeight() speedWeight=((speedPoints_L-1)+speedPoints_H*65534)/(speedPoints_L+speedPoints_H*65534) 
+#define __calculateSpeedWeight() speedWeight=(speedPoints_L-1)/speedPoints_L 
+
+void PrintBone(char string[]);
 
 using namespace std;
 
@@ -46,9 +48,10 @@ class odometer{
 		double getAverageSpeed();
 		double getDistance();
 		double getWheelSize();
-		void addSpeedDataPoint(unsigned int newDataPoint);
+		void addSpeedDataPoint(WORD newDataPoint);
 		void resetSpeedPoints();
 		void setStartDate(unsigned int sDays, unsigned int sMonths, unsigned int sYear);
+		void setWheelSize(double wheelSize);
 		void setOdometer(double swapAveSpeed, double swapDistance,
 						double swapWheelSize, unsigned int swapSpeedPoints_L,
 						unsigned int swapSpeedPoints_H,unsigned int swapMinutesElapsed,
@@ -59,9 +62,6 @@ class odometer{
 	protected:
 		void setNewOdometerWOtime(double wheelSize=DEFAULT_WHEEL_SIZE);											//New odometer without valid time
 		void setNewOdometerWtime(double wheelSize=DEFAULT_WHEEL_SIZE, unsigned int sDate=0, unsigned int sTime=0);	//New odometer with valid time
-	
-		void setWheelSize(double wheelSize);
-
 		void resetOdometer();		//used by trip.h
 		//Get functions for normal odometer stuff
 
@@ -69,7 +69,7 @@ class odometer{
 		double aveSpeed, distance, currentSpeed,wheelSize,speedWeight;
 		unsigned int sDays, sYear;
 		unsigned int tripSeconds,tripMinutes, tripDays, tripYears;
-		unsigned int dataPoints[10];
+		WORD dataPoints[10];
 		unsigned int speedPoints_L, speedPoints_H;	//number of speed points
 		BOOL firstRun, noSpeed;
 		void updateSpeeds();
@@ -97,7 +97,7 @@ void odometer::resetOdometer(){
 	tripMinutes=0;
 	tripDays=0;
 	tripYears=0;
-	for (volatile int i=0; i<10; i++){
+	for (int i=0; i<10; i++){
 		dataPoints[i]=0;
 	}
 }
@@ -112,7 +112,8 @@ void odometer::setNewOdometerWOtime(double wheelSize){
 //New Odometer with wheel size and accurate/valid date and time.
 void odometer::setNewOdometerWtime(double wheelSize, unsigned int sDays, unsigned int sYear){
 	resetOdometer();
-	this->wheelSize=wheelSize;
+	if (wheelSize<1){this->wheelSize=DEFAULT_WHEEL_SIZE;}
+	else {this->wheelSize=wheelSize;}
 	this->sDays=sDays;
 	this->sYear=sYear;
 }
@@ -150,11 +151,11 @@ void odometer::setOdometer(double swapAveSpeed, double swapDistance,
 }
 
 //New speed data point
-void odometer::addSpeedDataPoint(unsigned int newDataPoint){
+void odometer::addSpeedDataPoint(WORD newDataPoint){
 	static BYTE counter=0;
 	//If this is first point or new wheelsize, or whatever, need to initialize all data points. 
 	if (firstRun || noSpeed){
-		for (volatile int j=0; j<10;j++){
+		for (int j=0; j<10;j++){
 			dataPoints[j]=newDataPoint;
 		}
 		firstRun=fFalse;				//reset flags
@@ -162,13 +163,15 @@ void odometer::addSpeedDataPoint(unsigned int newDataPoint){
 	//Normal data point. shift back and add new one.
 	} else {
 		//Shift data back one
-		for (volatile int i=0; i<9; i++){
+		for (int i=0; i<9; i++){
 			dataPoints[i]=dataPoints[i+1];	//shift down by one
 		}
 		dataPoints[9]=newDataPoint;		//add new data point
 	}
-	if (++speedPoints_L >= 65534){speedPoints_H++; speedPoints_L=0;}				//increment speed points
 	
+	//Add to amount of speed points.
+	//if (++speedPoints_L >= 65534){speedPoints_H++; speedPoints_L=0;}				//increment speed points
+	speedPoints_L++;
 	//Update distance traveled and time elapsed while riding.
 	distance+=wheelSize;			
 	tripSeconds += TIMER1_CLOCK_sec*newDataPoint;
@@ -207,14 +210,13 @@ void odometer::setWheelSize(double wheelSize){
 
 //Just got another data point, update all the statistics
 void odometer::updateSpeeds(){
-
 	//Update current speed
-	unsigned int sum;
+	unsigned int sum=0;
 	for (volatile int i=0; i<10; i++){
 		sum += dataPoints[i];
+		
 	}
 	currentSpeed=10.0*SECONDS_IN_HOUR*wheelSize/(sum*TIMER1_CLOCK_sec);		//calculate and update currentSpeed.
-	
 	//Update average speed
 	__calculateSpeedWeight();
 	aveSpeed=aveSpeed*speedWeight + currentSpeed/speedPoints_L;

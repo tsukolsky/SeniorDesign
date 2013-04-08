@@ -89,7 +89,6 @@ void SendInterruptGAVR(){
 	prtGAVRINT |= (1 << bnGAVRINT);
 	for (int i=0; i<2; i++){asm ("nop");}
 	prtGAVRINT &= ~(1 << bnGAVRINT);
-	Wait_sec(1);
 }
 
 /**************************************************************************************************************/
@@ -158,13 +157,12 @@ void sendGAVR(){
 				break;
 			}//end case 0
 			case 1: {
-				Wait_ms(300);		//Wait for connection to set and something to come in.			
+				//Wait for connection to set and something to come in.			
 				//Put together string that is being received.
 				while (noCarriage && flagSendingGAVR){
-					Wait_ms(100);				//wait for the register to start to load.
-					PrintBone("WaitingW...");
+					Wait_ms(50);				//wait for the register to start to load.
 					while (!(UCSR1A & (1 << RXC1)) && flagSendingGAVR);				//wait for next character
-					if (!flagSendingGAVR){state=7; break;}		//if timeout is why we broke, just exit
+					if (!flagSendingGAVR){PrintBone("TimeoutSend");PrintBone(recString); break;}		//if timeout is why we broke, just exit
 					recChar=UDR1;
 					recString[strLoc++]=recChar;
 					if (recChar=='.'){recString[strLoc++]='\0'; state=2; noCarriage=fFalse;}
@@ -185,11 +183,10 @@ void sendGAVR(){
 			case 3:{
 				Wait_ms(100);
 				if (flagUserClock && !flagUpdateGAVRClock){
-					PrintBone("GetTime.");
 					PrintGAVR("G.");				
+					PrintBone("GetTime.");
 				//If we are updating the gavr, send the time and date together regardless. preface with SYN
 				} else if (flagUpdateGAVRClock && !flagUserClock){
-					PrintBone("Sending time.");
 					strcpy(sentString,"A");			//this is a syn, not ack to save logic in GAVR code. Can change if we want.
 					strcat(sentString,currentTime.getTime());
 					strcat(sentString,"/");	//add delimiter.
@@ -197,7 +194,7 @@ void sendGAVR(){
 					strcat(sentString,".\0");
 					PutUartChGAVR('S');
 					printTimeDate(fFalse,fTrue,fTrue);			//date is terminated by a . so don't need to send character
-					Wait_ms(80);
+					PrintBone("Sending time.");
 				} else {PrintBone("noflags.");state=7; break;}	//end if-else (what we are doing).
 							
 				//Reset the recString to receive the next ACK.
@@ -214,7 +211,7 @@ void sendGAVR(){
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 				PrintBone("Success.");
 				flagSendingGAVR=fFalse;
-				flagUpdateGAVRClock=fFalse;
+				flagUpdateGAVRClock=fFalse;							//Always true if we get here.
 				state=0;
 				break;
 				}//end case 5
@@ -276,9 +273,9 @@ void ReceiveGAVR(){
 				case 1:{
 					//Assemble string case
 					while (noCarriage && flagReceivingGAVR){	//while there isn't a timeout and no carry
-						Wait_ms(100);
+						Wait_ms(50);
 						while (!(UCSR1A & (1 << RXC1)) && flagReceivingGAVR);				//get the next character
-						if (!flagReceivingGAVR){state=0; break;}							//if there was a timeout, break out and reset state
+						if (!flagReceivingGAVR){state=0; PrintBone("Timeout-RG");PrintBone(recString);break;}							//if there was a timeout, break out and reset state
 						recChar=UDR1;
 						recString[strLoc++]=recChar;										//'.' always included into recString
 						if (recChar == '.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
@@ -362,33 +359,24 @@ void ReceiveGAVR(){
 							currentTime.setDate(tempNum1[0],tempNum1[1],tempNum1[2]);
 							saveDateTime_eeprom(fTrue,fTrue);
 							flagUserClock=fFalse;
-							
-							PrintBone("Set my time.");							
+							flagWaitingForReceiveGAVR=fFalse;			
 							//send ACK
 							recString[0]='A';
 							PrintGAVR(recString);
+							PrintBone("Set my time.");
 							state=7;
-						} else {
+						} else {			//If one was unsucessful, we need to keep waiting for the date
 							//Here is a choice: Do we watn  to user to indicate the time is wrong, or just make them set it? Doesn't really matter.
 							flagUserClock=fTrue;
+							flagWaitingForReceiveGAVR=fTrue;
 							PrintBone("Bad time.");
-							state=5;
-						}			
-						
-						//If we wanted date and got it correctly, or wanted time and got it correctly, go to state 7 to ack with the appropriate response
-						if (flagUserClock && successDate && successTime){
-							flagUserClock=fFalse;
-							flagWaitingForReceiveGAVR=fFalse;
-							state=7;					//Respond with correct string ACK
-						} else {
-							PrintGAVR("B.");
-							state=5;
-						}																										
+							state=5;						
+						}//end if-else flagUserTime && successDate/Time
+																																	
 					} else {	//don't need the date or time, wasn't looking for it. Respond with ACKNO. Should reset all flags on GAVR side.
 						PrintGAVR("NO.");
 						state=5;
-					}					
-					// end if-else (flagUserClock)					
+					}// end if-else (flagUserClock)					
 					//Exit
 					break;
 					}//end case 3				
@@ -526,7 +514,6 @@ void ReceiveBone(){
 					break;
 					}//end case 6
 				case 7:{
-					cli();
 					//Parse the string
 					//Go through the string and parse for the time. Must go through the time to get the date.
 					BOOL successTime=fFalse, successDate=fFalse;			//whether or not we have successfully parsed string
@@ -588,11 +575,10 @@ void ReceiveBone(){
 					if (successDate && successTime){
 						currentTime.setDate(tempNum1[0],tempNum1[1],tempNum1[2]);
 						currentTime.setTime(tempNum[0],tempNum[1],tempNum[2]);
-						Wait_ms(300);
 						saveDateTime_eeprom(fTrue,fTrue);
 						//Even if we have updated the date and time with EEPROM data, do it again.
-						//flagUpdateGAVRClock=fTrue;
-						//Make sure UserCLock flags are down
+						flagUpdateGAVRClock=fTrue;
+						//Make sure UserClock flags are down
 						flagUserClock=fFalse;
 						state=3;	//Graceful exit
 						
@@ -605,12 +591,11 @@ void ReceiveBone(){
 						flagUserClock=fTrue;
 						flagUpdateGAVRClock=fFalse;
 						state=4;	//ACKBAD
-					} else;		
-					
+					} else if (!(successDate && successTime) && !flagFreshStart && !restart){state=4;}	//Don't change the flags, keep them the correct way
+					else {state=4;}
 					//Lower restart flags. Should have parallel case in timer just in case this state doesn't happen.
 					flagFreshStart=fFalse;
 					restart=fFalse;	
-					sei();	
 					break;
 					}//end case 7									
 				default:{flagReceivingBone=fFalse; state=0;break;}
