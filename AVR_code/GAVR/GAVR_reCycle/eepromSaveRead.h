@@ -2,7 +2,7 @@
 | eepromSaveRead.h
 | Author: Todd Sukolsky
 | Initial Build: 1/31/2013
-| Last Revised: 4/7/13
+| Last Revised: 4/14/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description:	This header contains the EEPROM memory locations for the variables

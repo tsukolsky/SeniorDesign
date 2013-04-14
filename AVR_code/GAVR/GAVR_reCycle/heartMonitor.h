@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 2/28/2013
-| Last Revised: 4/7/2013
+| Last Revised: 4/14/2013
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is a heartMonitor class that is used in the GAVR module. Used
@@ -22,6 +22,7 @@
 |					If there is a jump, bingo. More later...
 |			  4/7:  Changed some declarations and added some get functions for resetting trip 
 |					datas and such.
+|			  4/14: Trying new peak detection...
 |================================================================================
 | *NOTES: HR is on a linear model, not polynomially biased with extra weighting
 \*******************************************************************************/

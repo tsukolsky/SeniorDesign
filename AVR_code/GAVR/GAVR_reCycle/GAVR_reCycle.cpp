@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 4/8/13
+| Last Revised: 4/14/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -50,6 +50,8 @@
 |				 and other trip functionality things. Need to create an environment to test things. Outlying C program
 |				 is going to control what goes on when. Starts scripts in the beginning with fork() and then does them.
 |				 If an interrupt occurs, forks() and then does that work there. Implemented a "vector" class myVector.
+|			4/14- Testing the myVector class on x86 platform. Initialized all flags, added some cases for LCDinput/user 
+|			      interaction.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -71,6 +73,9 @@
 |			  with the time that it has, then if the user changes it the WAVR iwll
 |			  be updated with that time if it is valid. If it's not valid, then we should
 |			  ask for the time from the GAVR. 
+|		  (4) Bone should send trips in decrementing number, aka if it has 5 trips on it's stick,
+|		      it should send trip5, trip4, etc... trip1. That way the GAVR can just show the trips
+|		      in the correct order.
 \*******************************************************************************/
 
 using namespace std;
@@ -175,7 +180,7 @@ BOOL flagLCDinput, flagUSBinserted, flagUpdateWheelSize,flagTripOver, flagDelete
 /*==============================================================================================================*/
 
 /*==============================================================================================================*/
-BOOL flagHaveUSBTrips, flagOffloadTrip, flagNeedTrips;
+BOOL flagHaveUSBTrips, flagOffloadTrip, flagNeedTrips, flagViewBoneTrips, flagViewGAVRtrips;
 /* flagHaveUSBTrips: Whether or not there are USB trips in the USBtripsViewer vector							*/
 /* flagOffloadTrip:	We are sending one of our trips to the BeagleBone.											*/
 /* flagNeedTrips: User wants to see the trips, ask for them.													*/
@@ -407,6 +412,7 @@ int main(void)
 			
 		}			
 		
+		/* Debugging/PRE-LCD functionality */
 		if (flagShowStats && !flagWaitingForBone && !flagWaitingForWAVR && !flagReceiveBone && !flagReceiveWAVR && !flagQUIT){
 			cli();
 			flagShowStats=0;
@@ -439,6 +445,7 @@ int main(void)
 		}
 		//Here is where we react to what the LCD gets as inputs.		
 		if (flagLCDinput){
+			//User changed the wheel size
 			if (flagUpdateWheelSize){
 				double tempWheelSize;
 				globalTrip.setWheelSize(tempWheelSize);
@@ -447,6 +454,7 @@ int main(void)
 				EndTripEEPROM();
 				StartNewTripEEPROM();
 			}				
+			//If there is a USB and user asks to delete trips, offload a trip, or view trips on the USB, tell the Bone.
 			if (flagUSBinserted && (flagDeleteUSBTrip || flagNeedTrips || flagOffloadTrip)){
 				unsigned int whichGAVRTrip=1,whichUSBTrip=2;
 				//We want to view the trips, get them and push them onto a template stack.? or vector push?->Only looking at start date in first implementation(use char vector).
@@ -481,11 +489,17 @@ int main(void)
 					}
 					
 				} else;
-				//If we need to delete a trip
+				//If we need to delete a trip from the GAVR
 				if (flagDeleteGAVRTrip){
 					//delete the trip
 					DeleteTrip(whichGAVRTrip);
 					flagDeleteGAVRTrip=fFalse;
+				}
+				//If user wants to see the trips on the GAVR, show them.
+				if (flagViewGAVRtrips){
+				}
+				//If user wants to see the trips on the Bone, show them if we have them
+				if (flagViewBoneTrips && !flagNeedTrips && flagHaveUSBtrips){
 				}
 			}//end if USBinserted && flagOffloatTrip
 			
@@ -567,7 +581,7 @@ void AppInit(unsigned int ubrr){
 	ddrDEBUGled2 |= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
 	prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
 	
-	//Disable power to all peripherals
+	//Disable power to most peripherals that may be powered off.
 	PRR0 |= (1 << PRTWI)|(1 << PRTIM1)|(1 << PRTIM0)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
 	//Set up interrupts
@@ -586,7 +600,6 @@ void AppInit(unsigned int ubrr){
 	flagGetWAVRtime=fFalse;
 	flagInvalidDateTime=fFalse;
 	flagUpdateWAVRtime=fFalse;
-	//flagNewTripStartup=fFalse;
 	
 	flagReceiveWAVR=fFalse;
 	flagReceiveBone=fFalse;
@@ -594,7 +607,24 @@ void AppInit(unsigned int ubrr){
 	flagWaitingForBone=fFalse;
 	flagSendWAVR=fFalse;
 	flagSendBone=fFalse;
+	//flagNewTripStartup=fFalse;
+
+	flagLCDinput=fFalse;
+	flagUSBinserted=fFalse;
+	flagUpdpateWheelSize=fFalse;
+	flagTripOver=fFalse;
+	flagDeleteGAVRtrip=fFalse;
+	flagDeleteUSBTrip=fFalse;
+
+	flagHaveUSBTrips=fFalse;
+	flagOffloadTrip=fFalse;
+	flagNeedTrips=fFalse;
+	flagViewBoneTrips=fFalse;
+	flagViewGAVRtrips=fFalse;
+
+	//Enable Communication interrupts now.
 	__enableCommINT();
+
 	
 }
 /*************************************************************************************************************/
