@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 3/3/2013
-| Last Revised: 4/8/2013
+| Last Revised: 4/13/2013
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This file conatians the UART0 and UART1 basic send and receive routines used 
@@ -23,7 +23,10 @@
 |				  with trip data syncrhonization. (2) Added "SendBone" routine that either tells bone to delete
 |				  one of it's trips, send it's trips over to view, or offload a trip to the bone. HTTP1.0, only
 |				  one request/tirp at a time and then connection is reset.
-|			4/8- Uart transmission from bone and to/from WAVR works. Had to tweak flags
+|			4/8- Uart transmission from bone and to/from WAVR works. Had to tweak flags.
+|			4/13- Added race-condition fix for incoming time from WAVR that is blank, example is when there is a memory
+|				error on the WAVR and it doesn't send the time when calling "printTimeDate". Added case for sending
+|				to WAVR as well.
 |================================================================================
 | Revisions Needed:
 |		4/7: ReceiveBone() needs to be completed.
@@ -152,6 +155,7 @@ void ReceiveWAVR(){
 				PrintBone("Was asked for date.");
 				if (flagWAVRtime){flagWAVRtime=fFalse; flagUpdateWAVRtime=fFalse;}	//let the WAVR flag go down so that if a string comes in, we can allocate it. Mkae sure we don't try and send our time right away.
 			} else if ((recString[2]==':') != (recString[3]==':')){state=3;}	//go parse the string
+			else if (!strncmp(recString,"S.",2)){flagGetUserClock=fTrue;PrintGAVR(recString);PrintBone("Got S without time, error correction.");state=4;}	//Error condition when the WAVR tries to send a time that really isn't there. Something went wrong in it's memory.
 			else {PrintWAVR("E.");state=4;PrintBone("Error receiving-");PrintBone(recString);}					//E is for error
 			break;
 			}
@@ -319,6 +323,7 @@ void SendWAVR(){
 				else if (!strcmp(recString,sentString)){state=6; flagUpdateWAVRtime=fFalse; flagGetWAVRtime=fFalse;}	//Got the correct user clock, we can kill that signal now since it was set.
 				else if (!strncmp(recString,"NO.",3)){state=6; flagGetWAVRtime=fFalse; flagUpdateWAVRtime=fFalse;}	//We shouldn't have sent anything, just exit. Maybe we should ask for the WAVR time now.
 				else if (!strncmp(recString,"B.",2)){state=4;} //check validitity of date and time
+				else if (!strncmp(recString,"S.",2)){state=6; flagUpdateWAVRtime=fFalse; flagGetWAVRtime=fTrue;}	//Error case/race-condition (4/13 Revision)
 				else{state=5;PrintBone("Error.");}	//ACKERROR case.
 				break;
 				}//end case 2

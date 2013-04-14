@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 3/3/2013
-| Last Revised: 4/6/2013
+| Last Revised: 4/13/2013
 | Copyright of Todd Sukolsky
 |================================================================================
 | Description: This file conatians the UART0 and UART1 basic send and receive routines used 
@@ -39,6 +39,8 @@
 |				  write/implement the Trip protocol and BeagleBone UART protocol and BeagleBone Python code; then move on 
 |				  to this debugging. (2) Changed messages to shorter lengths, example "ACKBAD." is now "B." and "ACK." is now
 |				  "A.". Shortens time needed allowing for cleaner communications.
+|		    	4/13: Fixed race condition when the WAVR AND/OR GAVR tries to send the Time and Date, but the memory doesn't actually
+|				contain anything, happens sometimes on shorts. Implemented in SendGAVR and ReceiveGAVR.
 |================================================================================
 | Revisions Needed: (1) OPTIONAL-Add "ACKBAD" case in ReceiveGAVR()
 |							--Issue Resolved 4/5
@@ -177,6 +179,7 @@ void sendGAVR(){
 				else if (!strncmp(recString,"B.",2)){state=6;}	//BAD
 				//send string case.
 				else if (flagUpdateGAVRClock && !strcmp(recString,sentString)){PrintBone("Correct back.");state=5;}		//they match, successful send.
+				else if (!strncmp(recString,"S.",2)){state=5;}									//Don't do anything differnre'ty then if we sent the correct time.
 				else{PrintBone("Comparing.");PrintBone(recString);state=7;} //invalid ack. ACKERROR goes here.
 				break;
 				}//end case 2
@@ -288,6 +291,7 @@ void ReceiveGAVR(){
 					//Got string, see what it is case.
 					if (!strncmp(recString,"N.",8)){state=4;} //set appropriate flags and respond in appropriate way.
 					else if ((recString[2]==':') != (recString[3]==':')){state=3;PrintBone("Got a time.");}//go parse the string for a time and date. SYN03:33:12/DATE or SYN3:33:12/DATE, either char 4 or 5 is :
+					else if (!strncmp(recString,"S.",2)){state=5; PrintGAVR(recString);}			//Revision 4/13
 					else {state=6;}
 					break;
 				}//end case 2
