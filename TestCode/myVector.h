@@ -11,6 +11,11 @@
 |		Structure is FILO where, if you push four things: 0, 1->0, 2->1->0, 3->2->1->0
 | 		are the indices.
 \*******************************************************************************/
+#include <iostream>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <math.h>
 #include <inttypes.h>
 // Minimal class to replace std::vector
 template<typename Data>
