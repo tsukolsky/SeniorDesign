@@ -116,9 +116,9 @@ void DeleteTrip(BYTE whichTrip){
 /*************************************************************************************************************/
 void EndTripEEPROM(){	
 	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);								//If there is one trip, then the offset should be 1 to get to where new data is stored,\
-																						offset is old value of numberOfTrips, then incremented to alert/store the new number of trips.
-	WORD offset=INITIAL_OFFSET+((numberOfTrips-1)*BLOCK_SIZE);	
+																						offset is new value of numberOfTrips since the location we are writing two is one above what it should be.
 	numberOfTrips++;
+	WORD offset=INITIAL_OFFSET+((numberOfTrips-1)*BLOCK_SIZE);	
 	eeprom_update_byte(&eeNumberOfTrips,numberOfTrips);									//Put the new amount of trips in the correct location
 	eeprom_update_byte(&eeTripFinished,FINISHED);										//say that the trip is done with a 1(True)
 	//Now get the necessary data and store in EEPROM.
