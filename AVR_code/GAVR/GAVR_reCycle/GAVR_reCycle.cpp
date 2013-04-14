@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 4/7/13
+| Last Revised: 4/8/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -46,7 +46,10 @@
 |			4/7- Added more flags for LCD input and a polling if statement for the LCDinput flag. Groundwork for
 |				  interfacing with it. Third block of flags for more information.
 |			4/8- All UART tranmissions except receiveBone work. Changed around Receive/Send if blocks/polls in
-|				 main loop to allow for specific instructions to take place. Works.
+|				 main loop to allow for specific instructions to take place. Works. (2) Implemented delete functions
+|				 and other trip functionality things. Need to create an environment to test things. Outlying C program
+|				 is going to control what goes on when. Starts scripts in the beginning with fork() and then does them.
+|				 If an interrupt occurs, forks() and then does that work there. Implemented a "vector" class myVector.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -85,6 +88,7 @@ using namespace std;
 #include "trip.h"
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
 #include "ATmega2560.h"
+#include "myVector.h"
 #include "myUart.h"
 
 
@@ -161,23 +165,29 @@ BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingFo
 /*==============================================================================================================*/
 
 /*==============================================================================================================*/
-BOOL flagLCDinput, flagUSBinserted, flagUpdateWheelSize,flagTripOver, flagDeleteGAVRTrip, flagDeleteBoneTrip, flagOffloadTrip, flagNeedTrips;
+BOOL flagLCDinput, flagUSBinserted, flagUpdateWheelSize,flagTripOver, flagDeleteGAVRTrip, flagDeleteUSBTrip;
 /* flagLCDinput: We are accepting input from the LCD.															*/
 /* flagUSBinserted: There is a USB stick inserted in the module, poll options to see if user wants to act.		*/
 /* flagUpdateWheelSize: User updated the wheel size, set the wheel size of the trip to this new one.			*/
 /* flagTripOver: User just stopped the current trip, set up a new one.											*/
 /* flagDeleteGAVRTrip: Deleting a trip in the GAVR EEPROM.														*/
 /* flagDeleteBoneTrip: Delete a trip on the BeagleBone.															*/
-/* flagOffloadTrip:	We are sending one of our trips to the BeagleBone.											*/
-/* flagNeedTrips: User wants to see the trips, ask for them.													*/ 
 /*==============================================================================================================*/
 
+/*==============================================================================================================*/
+BOOL flagHaveUSBTrips, flagOffloadTrip, flagNeedTrips;
+/* flagHaveUSBTrips: Whether or not there are USB trips in the USBtripsViewer vector							*/
+/* flagOffloadTrip:	We are sending one of our trips to the BeagleBone.											*/
+/* flagNeedTrips: User wants to see the trips, ask for them.													*/
+/*==============================================================================================================*/
 
 /*****************************************/
 /**			Global Variables			**/
 /*****************************************/
 myTime currentTime;			//The clock, must be global. Initiated as nothing.
 trip globalTrip;			//Trip must be global as well, initialed in normal way. Startup procedure sets it. 
+myVector<char *> USBtripsViewer;	//Vector to hold trip data sent over by the USB
+myVector<char *> USBtripsHolder;
 
 WORD numberOfSpeedOverflows=0;
 BOOL flagNoSpeed=fFalse;
@@ -427,7 +437,7 @@ int main(void)
 			PrintBone("*** ");
 			sei();
 		}
-/*		//Here is where we react to what the LCD gets as inputs.		
+		//Here is where we react to what the LCD gets as inputs.		
 		if (flagLCDinput){
 			if (flagUpdateWheelSize){
 				double tempWheelSize;
@@ -437,28 +447,49 @@ int main(void)
 				EndTripEEPROM();
 				StartNewTripEEPROM();
 			}				
-			if (flagUSBinserted && (flagDeleteTrip || flagNeedTrips || flagOffloadTrip){
-				unsigned int whichGAVRTrip=1,whichBoneTrip=2;
+			if (flagUSBinserted && (flagDeleteUSBTrip || flagNeedTrips || flagOffloadTrip)){
+				unsigned int whichGAVRTrip=1,whichUSBTrip=2;
 				//We want to view the trips, get them and push them onto a template stack.? or vector push?->Only looking at start date in first implementation(use char vector).
 				if (flagNeedTrips){
 					SendBone(0);
 				}
 				//Get which trip the user wants to offload and send it to the Bone
-				if (flagOffloadTrip && !flagDeleteBoneTrip){
+				if (flagOffloadTrip && !flagDeleteUSBTrip){
 					SendBone(whichGAVRTrip);
 				//Tell the beaglebone to delete one of it's trips.
-				} else if (flagDeleteBoneTrip && !flagOffloadTrip){
-					SendBone(whichBoneTrip);
+				} else if (flagDeleteUSBTrip && !flagOffloadTrip){
+					//tell the bone to delete the trip.
+					SendBone(whichUSBTrip);
+					
+					//Delete that trip from the USBtripsViewer
+					BYTE numberOfUSBTrips=USBtripsViewer.size();
+					
+					//If there are 4 trips and we want to delete trip two, we pop trips 4->3 into new buffer, then pop oen to delete, then push 3->4 back on (now 2->3).
+					BYTE numberOfPops=numberOfUSBTrips-whichUSBTrip;
+					char * tempString;
+					for (int i=0; i<numberOfPops;i++){
+						tempString=USBtripsViewer.pop_back();
+						USBtripsHolder.push_back(tempString);
+					}
+					//Pop the one to delete off
+					tempString=USBtripsViewer.pop_back();
+					
+					//Push them back onto the USBtripsViewer.
+					for (int i=0; i<numberOfPops; i++){
+						tempString=USBtripsHolder.pop_back();
+						USBtripsViewer.push_back(tempString);
+					}
+					
 				} else;
 				//If we need to delete a trip
-				if (flagDeleteTrip){
+				if (flagDeleteGAVRTrip){
 					//delete the trip
 					DeleteTrip(whichGAVRTrip);
-					flagDeleteTrip=fFalse;
+					flagDeleteGAVRTrip=fFalse;
 				}
 			}//end if USBinserted && flagOffloatTrip
 			
-		}	*/
+		}	
 		
 		//If shutdown is imminent, go bye-bye	
 		if (flagQUIT){
