@@ -145,3 +145,11 @@
 #define bnBBReceive		1		//INT1
 #define bnWAVRReceive	0		//INT0
 
+#define BIT0			0
+#define BIT1			1
+#define BIT2			2
+#define BIT3			3
+#define BIT4			4
+#define BIT5			5
+#define BIT6			6
+#define BIT7			7

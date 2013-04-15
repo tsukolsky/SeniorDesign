@@ -84,6 +84,9 @@
     <Compile Include="eepromSaveRead.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="gavrUart.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="GAVR_reCycle.cpp">
       <SubType>compile</SubType>
     </Compile>
@@ -103,9 +106,6 @@
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="stdtypes.h">
-      <SubType>compile</SubType>
-    </Compile>
-    <Compile Include="myUart.h">
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="trip.h">

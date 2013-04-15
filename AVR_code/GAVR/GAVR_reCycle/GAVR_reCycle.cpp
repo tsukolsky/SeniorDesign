@@ -52,6 +52,10 @@
 |				 If an interrupt occurs, forks() and then does that work there. Implemented a "vector" class myVector.
 |			4/14- Testing the myVector class on x86 platform. Initialized all flags, added some cases for LCDinput/user 
 |			      interaction.
+|			4/15- Added functinoalty for UART2 Receiving Bone to work. Added interrupt vectors for INT5 and UART2_RX, 
+|				  two flags (flagWaitingForBone2 and flagReceiveBone2), timeout capability, main loop call. Also
+|				  added functionality to deleteGAVRtrip protocol. Need to delete the GPS data on the bone, changed 
+|				  SendBone tactics in myUart.h. Added protocol in routine in main.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -76,6 +80,7 @@
 |		  (4) Bone should send trips in decrementing number, aka if it has 5 trips on it's stick,
 |		      it should send trip5, trip4, etc... trip1. That way the GAVR can just show the trips
 |		      in the correct order.
+|		  (5) PINH6 serves as USB inserted or not GPIO. If low, no USB. if High, USB is inserted.
 \*******************************************************************************/
 
 using namespace std;
@@ -94,7 +99,7 @@ using namespace std;
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
 #include "ATmega2560.h"
 #include "myVector.h"
-#include "myUart.h"
+#include "gavrUart.h"
 
 
 /*****************************************/
@@ -113,8 +118,8 @@ using namespace std;
 /*****************************************/
 /**			Interrupt Macros			**/
 /*****************************************/
-#define __killCommINT() EIMSK &= ~((1 << INT0)|(1 << INT1))		//disable any interrupt that might screw up reception. Keep the clock ticks going though
-#define __enableCommINT()  EIMSK |= (1 << INT0)|(1 << INT1)
+#define __killCommINT() EIMSK &= ~((1 << INT0)|(1 << INT1)|(1 << INT5))		//disable any interrupt that might screw up reception. Keep the clock ticks going though
+#define __enableCommINT()  EIMSK |= (1 << INT0)|(1 << INT1)|(1 << INT5)
 #define __killSpeedINT() EIMSK &= ~(1 << INT6)
 #define __enableSpeedINT() EIMSK |= (1 << INT6)
 
@@ -156,14 +161,16 @@ BOOL justStarted, flagQUIT, flagGetUserClock, flagWAVRtime, flagGetWAVRtime, fla
 /*==============================================================================================================*/
 
 /*==============================================================================================================*/
-BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagSendBone, flagWaitingForWAVR, flagWaitingForBone, flagNewTripStartup;
+BOOL flagReceiveWAVR, flagSendWAVR, flagReceiveBone, flagReceiveBone2, flagSendBone, flagWaitingForWAVR, flagWaitingForBone, flagWaitingForBone2, flagNewTripStartup;
 /* flagReceiveWAVR: We are receiving, or about to receive, transmission from WAVR								*/
 /* flagSendWAVR: Sending to WAVR, or about to. We need to ask the WAVR for date/time or send it the date and	*/
 /*				  time it asked for.																			*/
-/* flagReceiveBone: Receiving, or about to receive, the transmission from the BeagleBone						*/
+/* flagReceiveBone: Receiving, or about to receive, the transmission from the BeagleBone on UART0				*/
+/* flagReceiveBone2: Receiving, or about to receive, the transmission from beagleBone on UART2					*/
 /* flagSendBone: Sending to, or about to send, information to the Bone											*/
 /* flagWaitingForWAVR: Waiting to receive a UART string from WAVR, let main program know that with this flag.	*/
-/* flagWaitingForBone: Waiting to receive a UART string from the BONE, this alerts main program.				*/
+/* flagWaitingForBone: Waiting to receive a UART string from the BONE on uart0 this alerts main program.		*/
+/* flagWaitingForBone2: Waiting to receive a UART string from Bone on UART2.									*/
 /* flagNewTripStartup: Whether or not a new trip was created on startup, or old trip was loaded. If new trip,	*/
 /*					need a date update from the WAVR before we can do anything (flag stays high until update).	*/
 /*					If false, will stay false until a reboot.													*/
@@ -180,24 +187,26 @@ BOOL flagLCDinput, flagUSBinserted, flagUpdateWheelSize,flagTripOver, flagDelete
 /*==============================================================================================================*/
 
 /*==============================================================================================================*/
-BOOL flagHaveUSBTrips, flagOffloadTrip, flagNeedTrips, flagViewBoneTrips, flagViewGAVRtrips;
+BOOL flagHaveUSBTrips, flagOffloadTrip, flagNeedTrips, flagViewUSBTrips, flagViewGAVRtrips;
 /* flagHaveUSBTrips: Whether or not there are USB trips in the USBtripsViewer vector							*/
 /* flagOffloadTrip:	We are sending one of our trips to the BeagleBone.											*/
 /* flagNeedTrips: User wants to see the trips, ask for them.													*/
+/* flagViewUSBTrips: User wants to view USB trips.																*/
+/* flagViewGAVRTrips: User wants to view GAVR trips.															*/
 /*==============================================================================================================*/
 
 /*****************************************/
 /**			Global Variables			**/
 /*****************************************/
-myTime currentTime;			//The clock, must be global. Initiated as nothing.
-trip globalTrip;			//Trip must be global as well, initialed in normal way. Startup procedure sets it. 
+myTime currentTime;					//The clock, must be global. Initiated as nothing.
+trip globalTrip;					//Trip must be global as well, initialed in normal way. Startup procedure sets it. 
 myVector<char *> USBtripsViewer;	//Vector to hold trip data sent over by the USB
 myVector<char *> USBtripsHolder;
+WORD HRSAMPLES[300];				//Array of HR Samples passed to the hrMonitor.h class.
+WORD numberOfSpeedOverflows=0;		//How many times the counter has overflowed for the reed switch. 
+BOOL flagNoSpeed=fFalse;			//Whether or not there is a default of NO speed right now.
+BOOL flagShowStats=fFalse;			//Whether we should show the statistics of the biker, debug
 
-WORD numberOfSpeedOverflows=0;
-BOOL flagNoSpeed=fFalse;
-BOOL flagShowStats=fFalse;
-WORD HRSAMPLES[300];
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 //ISR for beaglebone uart input
@@ -226,6 +235,18 @@ ISR(USART1_RX_vect){
 	sei();
 }
 /************************************************************************/
+ISR(USART2_RX_vect){
+	cli();
+	if (flagWaitingForBone2){
+		flagWaitingForBone2=fFalse;
+		flagReceiveBone2=fTrue;
+	} else {
+		flagReceiveBone2=fFalse;
+	}	
+	UCSR2B &= ~(1 << RXCIE2);
+	sei();
+}	
+/************************************************************************/
 //INT0, getting something from the watchdog
 ISR(INT0_vect){	// got a signal from Watchdog that time is about to be sent over.
 	cli();
@@ -246,6 +267,15 @@ ISR(INT1_vect){
 	UCSR0B |= (1 << RXCIE0);	//enable receiver 1
 	__killCommINT();
 	PrintBone("A.");			//Ack from GAVR
+	sei();
+}
+/************************************************************************/
+ISR(INT5_vect){
+	cli();
+	flagWaitingForBone2=fTrue;
+	UCSR2B |= (1 << RXCIE2);
+	__killCommINT();
+	PrintBone2("A.");
 	sei();
 }
 /************************************************************************/
@@ -307,22 +337,29 @@ ISR(TIMER1_OVF_vect){
 }
 /************************************************************************/
 ISR(TIMER2_OVF_vect){
-	volatile static int WAVRtimeout=0, BONEtimeout=0, startupTimeout=0, sendingWAVRtimeout=0;
+	volatile static int WAVRtimeout=0, BONEtimeout=0, startupTimeout=0, sendingWAVRtimeout=0, BONE2timeout=0, sendingBoneTimeout=0;
 	prtDEBUGled2 ^= (1 << bnDBG10);
 	
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
 	//Timeout functionality
 			
-	//If WAVR receive timout is reached, either waiting or actually sending, reset the timeout, bring flags down and enable interrupt pins again		
-	if (WAVRtimeout <= COMM_TIMEOUT_SEC && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout++;}
-	else if ((WAVRtimeout > COMM_TIMEOUT_SEC) && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout=0; flagReceiveWAVR=fFalse; flagWaitingForWAVR=fFalse; __enableCommINT();}
-	else if (!flagReceiveWAVR && !flagWaitingForWAVR && WAVRtimeout > 0){WAVRtimeout=0;}	//Both flags aren't set, make sure the timeout is 0
-	else;
-	
+	//UART0/Bone Trips Send timeout
 	if (BONEtimeout <= COMM_TIMEOUT_SEC && (flagReceiveBone || flagWaitingForBone)){BONEtimeout++;}	
 	else if (BONEtimeout > COMM_TIMEOUT_SEC && (flagReceiveBone || flagWaitingForBone)){BONEtimeout=0; flagReceiveBone=fFalse; flagWaitingForBone=fFalse; __enableCommINT();}
 	else if (!flagReceiveBone && !flagWaitingForBone && BONEtimeout >0){BONEtimeout=0;}
+	else;
+	
+	//UART0/Sending to Bone timeout
+	if (flagSendBone && sendingBoneTimeout <= COMM_TIMEOUT_SEC){sendingBoneTimeout++;}
+	else if (flagSendBone && sendingBoneTimeout > COMM_TIMEOUT_SEC){sendingBoneTimeout=0;flagSendBone=fFalse; __enableCommINT();}		//this doesn't allow for a resend.
+	else if (!flagSendBone && sendingBoneTimeout > 0){sendingBoneTimeout=0;}
+	else;	
+	
+	//UART2/Bone Debug Tiemtout
+	if (BONE2timeout <= COMM_TIMEOUT_SEC && (flagReceiveBone2 || flagWaitingForBone2)){BONE2timeout++;}
+	else if (BONE2timeout > COMM_TIMEOUT_SEC && (flagReceiveBone2 || flagWaitingForBone2)){BONE2timeout=0; flagReceiveBone2=fFalse; flagWaitingForBone2=fFalse; __enableCommINT();}
+	else if (!flagReceiveBone2 && !flagWaitingForBone2 && BONE2timeout >0){BONE2timeout=0;}
 	else;
 	
 	//If sending to WAVR, institue the timeout
@@ -331,6 +368,12 @@ ISR(TIMER2_OVF_vect){
 	else if (!flagSendWAVR && sendingWAVRtimeout > 0){sendingWAVRtimeout=0;}
 	else;
 	
+	//If WAVR receive timout is reached, either waiting or actually sending, reset the timeout, bring flags down and enable interrupt pins again
+	if (WAVRtimeout <= COMM_TIMEOUT_SEC && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout++;}
+	else if ((WAVRtimeout > COMM_TIMEOUT_SEC) && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout=0; flagReceiveWAVR=fFalse; flagWaitingForWAVR=fFalse; __enableCommINT();}
+	else if (!flagReceiveWAVR && !flagWaitingForWAVR && WAVRtimeout > 0){WAVRtimeout=0;}	//Both flags aren't set, make sure the timeout is 0
+	else;
+		
 	//If we just started, increment the startUpTimeout value. When it hits 30, logic goes into place for user to enter time and date
 	if (justStarted && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
 	else if (justStarted && startupTimeout > STARTUP_TIMEOUT_SEC){
@@ -369,7 +412,7 @@ int main(void)
 			prtDEBUGled2 |= (1 << bnDBG9);		//second from bottom, next to RTC...
 			ReceiveWAVR();
 			Wait_sec(2);
-			if (!flagReceiveBone && !flagWaitingForBone){		//re enable comm interrupts only if we aren't waiting for one currently, or are about to go into one.
+			if (!flagReceiveBone && !flagWaitingForBone && !flagReceiveBone2 && !flagWaitingForBone2){		//re enable comm interrupts only if we aren't waiting for one currently, or are about to go into one.
 				__enableCommINT();
 			}
 			prtDEBUGled2 &= ~(1 << bnDBG9);
@@ -380,12 +423,22 @@ int main(void)
 			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
 			ReceiveBone();
 			Wait_sec(2);
-			if (!flagReceiveWAVR && !flagWaitingForWAVR){
+			if (!flagReceiveWAVR && !flagWaitingForWAVR && !flagReceiveBone2 && !flagWaitingForBone2){
 				__enableCommINT();
 			}
 			prtDEBUGled2 &= ~(1 << bnDBG8);	
 		}		
-			
+		
+		//If we are supposed to be getting something fromt he Bone's debug UART. WAVR and UART0 Bone have priority. Lowest on the totem pole.
+		if (flagReceiveBone2 && !flagQUIT && !flagReceiveBone && !flagReceiveWAVR){
+			prtDEBUGled |= (1 << bnDBG3);
+			ReceiveBone2();
+			Wait_sec(2);
+			if (!flagReceiveWAVR && flagWaitingForWAVR){
+				__enableCommINT();
+			}
+			prtDEBUGled2 &= ~(1 << bnDBG3);
+		}
 		
 		//Send either "I need the date or time" or "Here is the date and time you asked for. If we are still waiting for WAVR, then don't send anything.
 		if ((flagGetWAVRtime || flagUpdateWAVRtime) && !flagWaitingForWAVR && !flagQUIT){
@@ -443,16 +496,19 @@ int main(void)
 			PrintBone("*** ");
 			sei();
 		}
+		
 		//Here is where we react to what the LCD gets as inputs.		
 		if (flagLCDinput){
 			//User changed the wheel size
 			if (flagUpdateWheelSize){
-				double tempWheelSize;
+				double tempWheelSize=-2;
 				globalTrip.setWheelSize(tempWheelSize);
 			}				
+			
 			if (flagTripOver){						//If the trip is over, end this one then start a new one.
 				EndTripEEPROM();
 				StartNewTripEEPROM();
+				SendBone(0);						//Tell the bone a new trip was started.
 			}				
 			//If there is a USB and user asks to delete trips, offload a trip, or view trips on the USB, tell the Bone.
 			if (flagUSBinserted && (flagDeleteUSBTrip || flagNeedTrips || flagOffloadTrip)){
@@ -489,21 +545,40 @@ int main(void)
 					}
 					
 				} else;
-				//If we need to delete a trip from the GAVR
+				
+				//If we need to delete a trip from the GAVR, delete it and then tell bone to delete that GPS file.
 				if (flagDeleteGAVRTrip){
+					static BOOL continueWithDelete=fTrue;
+					int currentTripNumber=10;
+					//Make it so we can't delete the current trip.
+					if (whichGAVRTrip==currentTripNumber){
+						flagDeleteGAVRTrip=fFalse;
+						continueWithDelete=fFalse;
+					} 
 					//delete the trip
-					DeleteTrip(whichGAVRTrip);
-					flagDeleteGAVRTrip=fFalse;
-				}
+					if (continueWithDelete){
+						DeleteTrip(whichGAVRTrip);	
+					}									
+					SendBone(whichGAVRTrip);					//Will leave flag high if there was an error. If there was, don't do anything
+					if (flagDeleteGAVRTrip){
+						//Flag is still high, don't delete on next round
+						continueWithDelete=fFalse;
+					} else {	
+						//successfully deleted GPS data from the BeagleBone. Next time this is called it will be for a new trip. Good to go.
+						continueWithDelete=fTrue;
+					}
+					
+				}//end if flagDeleteGAVRTrip
+				
 				//If user wants to see the trips on the GAVR, show them.
 				if (flagViewGAVRtrips){
 				}
 				//If user wants to see the trips on the Bone, show them if we have them
-				if (flagViewBoneTrips && !flagNeedTrips && flagHaveUSBtrips){
+				if (flagViewUSBTrips && !flagNeedTrips && flagHaveUSBTrips){
 				}
 			}//end if USBinserted && flagOffloatTrip
 			
-		}	
+		}//end LCD input	
 		
 		//If shutdown is imminent, go bye-bye	
 		if (flagQUIT){
@@ -526,7 +601,15 @@ int main(void)
 		//IF we have an invalid time, ask the WAVR for a time.
 		if (flagInvalidDateTime){
 			flagGetWAVRtime=fTrue;
-		}						
+		}			
+		
+		//Check GPIO pin H6 to see if USB is inserted.
+		if (PINH & (1 << BIT6)){
+			flagUSBinserted=fTrue;	
+		} else {
+			flagUSBinserted=fFalse;
+		}
+							
     }//end while
 }//end main
 
@@ -559,18 +642,21 @@ void DeviceInit(){
 /*************************************************************************************************************/
 void AppInit(unsigned int ubrr){
 	
-	//Set BAUD rate of UART
+	//Set BAUD rate of UART0, 1, 2
 	UBRR0L = ubrr;   												//set low byte of baud rate for uart0
 	UBRR0H = (ubrr >> 8);											//set high byte of baud rate for uart0
-	//UCSR0A |= (1 << U2X0);										//set high speed baud clock, in ASYNC mode
 	UBRR1L = ubrr;													//set low byte of baud for uart1
 	UBRR1H = (ubrr >> 8);											//set high byte of baud for uart1
-	//UCSR1A |= (1 << U2X1);										//set high speed baud clock, in ASYNC mode			
+	UBRR2L = ubrr;
+	UBRR2H = (ubrr >> 8);	
+	
 	//Enable UART_TX0, UART_RX0, UART_RX1, UART_TX1
 	UCSR0B = (1 << TXEN0)|(1 << RXEN0);
 	UCSR0C = (1 << UCSZ01)|(1 << UCSZ00);							//Asynchronous; 8 data bits, no parity
 	UCSR1B = (1 << TXEN1)|(1 << RXEN1);
 	UCSR1C = (1 << UCSZ11)|(1 << UCSZ10);
+	UCSR2B = (1 << TXEN2)|(1 << RXEN2);
+	UCSR2C = (1 << UCSZ21)|(1 << UCSZ20);
 	//Set interrupt vectors enabled
 	//UCSR0B |= (1 << RXCIE0);
 	//UCSR1B |= (1 << RXCIE1);
@@ -586,7 +672,7 @@ void AppInit(unsigned int ubrr){
 
 	//Set up interrupts
 	EICRA = (1 << ISC01)|(1 << ISC00)|(1 << ISC11)|(1 << ISC10);			//rising edge of INT0 and INT1 enables interrupt
-	EICRB = (1  << ISC61)|(1 << ISC60)|(1 << ISC71)|(1 << ISC70);			//rising edge of INT7 and INT6 enables interrupt
+	EICRB = (1 << ISC51)|(1 << ISC50)|(1  << ISC61)|(1 << ISC60)|(1 << ISC71)|(1 << ISC70);			//rising edge of INT7 and INT6 and INT5 enables interrupt
 	__killCommINT();
 	__killSpeedINT();
 	EIMSK |= (1 << INT7);													//let it know if shutdown is imminent
@@ -603,23 +689,25 @@ void AppInit(unsigned int ubrr){
 	
 	flagReceiveWAVR=fFalse;
 	flagReceiveBone=fFalse;
+	flagReceiveBone2=fFalse;
 	flagWaitingForWAVR=fFalse;
 	flagWaitingForBone=fFalse;
+	flagWaitingForBone2=fFalse;
 	flagSendWAVR=fFalse;
 	flagSendBone=fFalse;
 	//flagNewTripStartup=fFalse;
 
 	flagLCDinput=fFalse;
 	flagUSBinserted=fFalse;
-	flagUpdpateWheelSize=fFalse;
+	flagUpdateWheelSize=fFalse;
 	flagTripOver=fFalse;
-	flagDeleteGAVRtrip=fFalse;
+	flagDeleteGAVRTrip=fFalse;
 	flagDeleteUSBTrip=fFalse;
 
 	flagHaveUSBTrips=fFalse;
 	flagOffloadTrip=fFalse;
 	flagNeedTrips=fFalse;
-	flagViewBoneTrips=fFalse;
+	flagViewUSBTrips=fFalse;
 	flagViewGAVRtrips=fFalse;
 
 	//Enable Communication interrupts now.

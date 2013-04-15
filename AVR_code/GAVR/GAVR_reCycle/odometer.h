@@ -24,9 +24,9 @@
 #include <stdio.h>
 #include "stdtypes.h"
 
-#define DEFAULT_WHEEL_SIZE .0013882576		//28" wheel size
+#define DEFAULT_WHEEL_SIZE .0013882576		//28" wheel size in miles
 #define SECONDS_IN_HOUR 3600
-#define TIMER1_CLOCK_sec .000032
+#define TIMER1_CLOCK_sec .000032			//Time between ticks in the speed timer...(.032ms)
 
 #define __calculateSpeedWeight() speedWeight=(speedPoints_L-1)/speedPoints_L 
 
@@ -204,6 +204,9 @@ void odometer::resetSpeedPoints(){
 
 //Updating wheel size. Don't reset anything, but initialize first run to eliminate old speeds. 
 void odometer::setWheelSize(double wheelSize){
+	if (wheelSize < 0){
+		wheelSize=DEFAULT_WHEEL_SIZE;
+	}
 	firstRun=fTrue;
 	this->wheelSize=wheelSize;
 }
@@ -216,6 +219,7 @@ void odometer::updateSpeeds(){
 		sum += dataPoints[i];
 		
 	}
+	//Everyting is good up until this calculation.
 	currentSpeed=10.0*SECONDS_IN_HOUR*wheelSize/(sum*TIMER1_CLOCK_sec);		//calculate and update currentSpeed.
 	//Update average speed
 	__calculateSpeedWeight();

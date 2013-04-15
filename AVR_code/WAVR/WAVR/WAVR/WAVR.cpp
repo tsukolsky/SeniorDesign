@@ -86,7 +86,7 @@
 #include "ATmegaXX4PA.h"	//holds bit definitions
 #include "myTime.h"			//myTime class, includes the myDate.h inherently
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
-#include "myUart.h"
+#include "wavrUart.h"
 
 
 using namespace std;

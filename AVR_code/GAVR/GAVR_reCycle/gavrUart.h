@@ -1,13 +1,13 @@
 /*******************************************************************************\
-| myUart.h
+| gavrUart.h
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 3/3/2013
-| Last Revised: 4/14/2013
-| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
+| Last Revised: 4/15/2013
+| Copyright of Todd Sukolsky and Boston University ECE Senior Design Team ReCycle, 2013
 |================================================================================
-| Description: This file conatians the UART0 and UART1 basic send and receive routines used 
-|			by the Atmel family of microcontrollers
+| Description: This file conatians the uart protocols for the Graphics AVR
+|	for the Senior Design project ReCycle
 |--------------------------------------------------------------------------------
 | Revisions: 3/3: Initial build
 |			3/14: Slight changes to implemntation of GAVR->WAVR responses for 
@@ -33,14 +33,18 @@
 |			      if bone resends the GAVR will CLEAR the USBtripsViewer vector and then receive the trips like it should.
 |			      In SendBone(), tweaked small error in BOOL when exiting from offloading trip as well as what "sendingWhat"
 |			      is required to access (char *) array for preface characters.
-|================================================================================
 |			4/8- Uart transmission from bone and to/from WAVR works. Had to tweak flags. Revised SendBone to work
 |				  with initial script, added ReceiveBone2() which communicates. Implements vector class.
+|			4/15- Final tweaks to ReceiveBone2 (now ReceiveBone) protocol as well as SendBone. Counterfparts tweaked as well.
+|				  No more USB inserted/ejected communication, dealt with in GPIO pin. See note 5 in main. Added UART2 functionality
+|				  for GAVR to talk to bone if needed in PrintBone2 and PutUARTChar2 routines, ReceiveBone2, and printDateTime now
+|				  has flag recognition for which UART to go off of. Changed name.
 |================================================================================
 | Revisions Needed:
-|		4/7: ReceiveBone() needs to be completed.
+|		4/7: ReceiveBone2() needs to be completed.|
+|			--Resolved 4/15
 |================================================================================
-| *NOTES:
+| *NOTES: (1) Currently, if the Bone sends trips to the GAVR it will ALWAYS RECEIVE and update them.
 \*******************************************************************************/
 
 #include <stdio.h>
@@ -49,9 +53,9 @@
 #include "stdtypes.h"
 
 //Declare external flags, clock and trip.
-extern BOOL flagReceiveWAVR, flagReceiveBone, flagSendWAVR, flagSendBone, flagGetUserClock, flagWAVRtime, flagGetWAVRtime,justStarted;
-extern BOOL flagInvalidDateTime, flagNewTripStartup, flagUpdateWAVRtime,flagWaitingForWAVR;
-extern BOOL flagOffloadTrip, flagNeedTrips, flagDeleteUSBTrip, flagUSBinserted, flagHaveUSBTrips;
+extern BOOL flagReceiveWAVR, flagReceiveBone, flagReceiveBone2, flagSendWAVR, flagSendBone, flagGetUserClock, flagWAVRtime, flagGetWAVRtime,justStarted;
+extern BOOL flagInvalidDateTime, flagNewTripStartup, flagUpdateWAVRtime,flagWaitingForWAVR, flagTripOver;
+extern BOOL flagOffloadTrip, flagNeedTrips, flagDeleteUSBTrip, flagDeleteGAVRTrip, flagHaveUSBTrips;
 extern myTime currentTime;
 extern trip globalTrip;
 extern myVector<char *> USBtripsViewer, USBtripsHolder;
@@ -80,7 +84,6 @@ void Wait_ms(unsigned int delay)
 		delay -= 1;
 	}
 }
-
 /**************************************************************************************************************/
 void PutUartChBone(char ch){
 	while (!(UCSR0A & (1 << UDRE0)));
@@ -95,7 +98,18 @@ void PrintBone(char string[]){
 	}
 }
 /*************************************************************************************************************/
-
+void PutUartChBone2(char ch){
+	while (!(UCSR2A & (1 << UDRE2)));
+	UDR0=ch;
+}
+/*************************************************************************************************************/
+void PrintBone2(char string[]){
+	BYTE i=0;
+	while (string[i]){
+		PutUartChBone2(string[i++]);
+	}
+}
+/*************************************************************************************************************/
 void PutUartChWAVR(char ch){
 	while (!(UCSR1A & (1 << UDRE1)));
 	UDR1=ch;
@@ -163,7 +177,7 @@ void ReceiveWAVR(){
 				flagGetUserClock=fTrue;					//alert that we need to get the string
 				if (flagWAVRtime){flagWAVRtime=fFalse; flagUpdateWAVRtime=fFalse;}	//let the WAVR flag go down so that if a string comes in, we can allocate it. Mkae sure we don't try and send our time right away.
 			} else if ((recString[2]==':') != (recString[3]==':')){state=3;}	//go parse the string
-			else if (!strncmp(recString,"S.",2)){flagGetUserClock=fTrue;PrintGAVR(recString);PrintBone("Got S without time, error correction.");state=4;}	//Error condition when the WAVR tries to send a time that really isn't there. Something went wrong in it's memory.			
+			else if (!strncmp(recString,"S.",2)){flagGetUserClock=fTrue;PrintWAVR(recString);PrintBone("Got S without time, error correction.");state=4;}	//Error condition when the WAVR tries to send a time that really isn't there. Something went wrong in it's memory.			
 			else {PrintWAVR("E.");state=4;}					//E is for error
 			break;
 			}
@@ -388,12 +402,12 @@ void SendWAVR(){
 	}//end while(flagSendWAVR)	
 }//end function
 /*************************************************************************************************************/	
-void ReceiveBone(){
+void ReceiveBone2(){
 	char recChar, recString[40];
 	BYTE strLoc=0, state=0;
 	BOOL noCarriage=fTrue;
 	
-	while (flagReceiveBone){
+	while (flagReceiveBone2){
 		/*************************************************************BEGIN STATE MACHINE************************************************/
 		/* State 0: Get the first character that was loaded in the buffer. If ., go to ACKERROR state, else go to state 1				*/
 		/* State 1: Get the rest of a string. If timeout, do nothing. Otherwise assemble. If overflow, go to ACKERROR, else go to state2*/
@@ -419,8 +433,8 @@ void ReceiveBone(){
 				break;
 			}//end case 0
 			case 1:{
-				while (noCarriage && flagReceiveBone){	//while there isn't a timeout and no carry
-					while ((!(UCSR0A & (1 << RXC0))) && flagReceiveBone);		//get the next character
+				while (noCarriage && flagReceiveBone2){	//while there isn't a timeout and no carry
+					while ((!(UCSR0A & (1 << RXC0))) && flagReceiveBone2);		//get the next character
 						if (!flagReceiveBone){break;}					//if there was a timeout, break out and reset state
 						recChar=UDR0;
 						recString[strLoc++]=recChar;
@@ -442,43 +456,39 @@ void ReceiveBone(){
 			case 3:{
 				//Didn't get a good ack or there was an error.
 				Wait_ms(100);
-				flagReceiveBone=fFalse;
+				flagReceiveBone2=fFalse;
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 				state=0;
 				break;
 				}//end case 5
 			case 4:{
 				//Graceful exit.
-				flagReceiveBone=fFalse;
+				flagReceiveBone2=fFalse;
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 				state=0;
 				break;
 				}//end case 6						
-			default:{flagReceiveBone=fFalse; state=0;break;}
+			default:{flagReceiveBone2=fFalse; state=0;break;}
 			}//end switch
 	}//end while(flagUARTbone)	
 }//end ReceiveBone()
 /*************************************************************************************************************/
-void ReceiveBone2(){
+void ReceiveBone(){
 	char recChar, recString[40];
 	BYTE state=0, strLoc=0;
 	BOOL noCarriage=fTrue, flagGettingTrips=fFalse;
-	
-
-
 
 	/*****************************************State Machine Explained************************************************/
 	/* State 0: Got a UART_RX interrupt, take the character and store it in a string if not '.'. If so, go to 6   	*/
 	/* State 1: Receive the entire string. if overflow, go to error, otherwise wait for '.' or '\0', then go to 2	*/
 	/* State 2: See what was sent to us. If starts with T, getting Trip data, go to 3. if a 'D.', done sending trip */
-	/* 	    data and we should exit, if 'USB.' alert user that USB is inserted.					*/ 	
-	/* State 3: Store the trip data in a <char *> vector. Reset receive string then go back to receive. If we	*/
-	/* 	    already have trips we need to get rid of the others, must hav ebeen an error receiving. Go to 7, 	*/
-	/*	    then come back and laod the trips into the vector.							*/ 
-	/* State 4: Raise USB inserted flag. Go to exit.								*/
-	/* State 5: Exit case.												*/
-	/* State 6: Error in ACK case. Send "E." then exit.								*/
-	/* State 7: Clear out the USBtripsViewer vector; either USB eject or error in comm to GAVR from Bone w/ trips.	*/
+	/* 	    data and we should exit.																				*/ 	
+	/* State 3: Store the trip data in a <char *> vector. Reset receive string then go back to receive. If we		*/
+	/* 	    already have trips we need to get rid of the others, must hav ebeen an error receiving. Go to 7,		*/
+	/*	    then come back and laod the trips into the vector.														*/ 
+	/* State 4: Exit case.																							*/
+	/* State 5: Error in ACK case. Send "E." then exit.																*/
+	/* State 6: Clear out the USBtripsViewer vector; either USB eject or error in comm to GAVR from Bone w/ trips.	*/
 	/****************************************************************************************************************/
 
 	while (flagReceiveBone){
@@ -499,58 +509,50 @@ void ReceiveBone2(){
 					recChar=UDR0;
 					recString[strLoc++]=recChar;
 					if (recChar == '.' || recChar=='\0'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
-					else if (strLoc >= 39){state=6;noCarriage=fFalse;}
+					else if (strLoc >= 39){state=5;noCarriage=fFalse;}
 					else; //end if-elseif-else
 				}//end while
 				break;
 				}//end case 1
 			case 2:{
 				if (!strncmp(recString,"T",1)){flagGettingTrips=fTrue; state=3;}					//getting a trip, store the data.
-				else if (!strncmp(recString,"D.",2)){state=5;}					//exit
-				else if (!strncmp(recString,"USB.",4)){state=4;}				//set flag that USB is inserted.
-				else if (!strncmp(recString,"USBE.",5)){state=7;}
-				else {state=6;}									//Error case
+				else if (!strncmp(recString,"D.",2)){flagHaveUSBTrips=fTrue;state=4;}					//exit
+				else {state=5;}									//Error case
 				break;
 				}//end case 2
 			case 3:{
 				//Store trip data in something. Need to add error check on whether we already loaded the trip data.
-				if (!flagHaveUSBtrips){
+				if (!flagHaveUSBTrips){
 					USBtripsViewer.push_back(recString);						//push the current string on the vector
 					state=2;
-				} else {state=7;}		//go to state 7 to clear evertyhing out to receive new trips,  error case.
+					PrintBone("A.");
+				} else {state=6;}		//go to state 7 to clear everything out to receive new trips,  error case.
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 				strLoc=0;
 				noCarriage=fFalse;				
 				break;
 				}//end case 3
 			case 4:{
-				//USB is inserted, alert.
-				PrintBone(recString);
-				flagUSBinserted=fTrue;
-				state=5;
-				break;
-				}//end case 4
-			case 5:{
 				//Exiting.
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 				flagReceiveBone=fFalse;
 				break;
-				}//end case 5
-			case 6:{
+				}//end case 4
+			case 5:{
 				//Error Case
 				PrintBone("E.");
 				state=5;
 				break;
-				}//end case 6
-			case 7:{
-				//The USB was taken out, clear out the USBtripsViewer vector
+				}//end case 5
+			case 6:{
+				//clear out the USBtripsViewer vector
 				for (int i=0; i<USBtripsViewer.size(); i++){
 					char *tempString=USBtripsViewer.pop_back();
-				}//end case 7
-				flagHaveUSBtrips=fFalse;		//say we don't have USBtrips
-				if (flagGettingTrips){state=2;}		//communication error  happened on last round.
-				else {PrintBone("USBE."); state=5;}				//usb eject
+				}
+				flagHaveUSBTrips=fFalse;			//say we don't have USBtrips, go back to state 3 to push first one on vector
+				state=3;
 				break;
+				}//end case 6				
 			default:{flagReceiveBone=fFalse;break;}
 		}//end switch
 	}//end while(flagReceiveBone)
@@ -558,7 +560,7 @@ void ReceiveBone2(){
 /*************************************************************************************************************/
 void SendBone(BYTE whichTrip){
 	char recChar, recString[20], checkString[2], sendString[20];
-	char *prefaceChar[9]={"T","SP","HR","DI","SD","SY","ME","DE","YE"};						//Speed, HeartRate, Distance, Start Day, Start Year, Minutes Elapsed, Days Elapsed, Years Elapsed
+	char *prefaceChar[9]={"T.","SP","HR","DI","SD","SY","ME","DE","YE"};						//Speed, HeartRate, Distance, Start Day, Start Year, Minutes Elapsed, Days Elapsed, Years Elapsed
 	BYTE sendingWhat=0, state=0, strLoc=0;
 	BOOL noCarriage=fTrue;
 	WORD offset=0;
@@ -566,7 +568,7 @@ void SendBone(BYTE whichTrip){
 	float aveSpeed=0, aveHR=0, distance=0;
 	
 	//Dependent flags: flagDeleteBoneTrip, flagNeedTrips, flagOffloadTrip
-	if (whichTrip!=0){
+	if (whichTrip != 0 && flagOffloadTrip){
 		//Get the trip data we need to send to the beaglebone. We are offloading trip data to the BeagleBone	WORD offset=2+((numberOfTrips-1)*26);
 		//Load the trip data from EEPROM based on the whichTrip. If whichTrip=3, need to load the third. AVESPEED for that trip is located at 2+(26*2)
 		offset=INITIAL_OFFSET+(whichTrip-1)*BLOCK_SIZE;
@@ -582,6 +584,23 @@ void SendBone(BYTE whichTrip){
 	
 	//Raise Send Flag to allow for Timeout to occur and protocol to go forward.
 	flagSendBone=fTrue;
+	
+	/*****************************************State Machine Explained************************************************/
+	/* State 0: Raise interrupt to BeagleBone.																		*/
+	/* State 1: Put together the return string, should be A. Once '.', got o state 2, otherwise go to Error.		*/
+	/* State 2: If we are offloading trip, go to state 3, if deleting state 9, if want trips go to 7. Otherwise 6.  */
+	/* State 3: Compare the string. If initial 'A.', go to state 4 as well as if it matches SentString or T.		*/
+	/* State 4: Given which trip we have sent, send the next parameter in the trip. Incrmented by sendingWhat and   */
+	/*			descriptor is defined by "prefaceChar".																*/
+	/* State 5: Done with fields exit.																				*/
+	/* State 6: Error case. Print 'E.' then exit.																	*/
+	/* State 7: See what came in. If 'A.', tell Bone I want trips in 8.	If 'NT.', exit. Otherwise error.			*/
+	/* State 8: Say 'NT.', go to state 1 to put together returning string.											*/
+	/* State 9: See what came in. If 'A.', tell bone which trip to delete. If 'Dx' with trip, exit. otherwise error.*/
+	/* State 10: Send delete command, go to state 1 to receive acceptance or denial.								*/
+	/* State 11: Need to delete GPS, see if it's an A. If so ,go to 12, if what we sent, exit.						*/
+	/* State 12: Tell Bone which GPS to delete.																		*/
+	/****************************************************************************************************************/	
 	
 	while (flagSendBone){
 		switch(state){	
@@ -614,7 +633,11 @@ void SendBone(BYTE whichTrip){
 				} else if (flagDeleteUSBTrip){	
 					state=9;		//tell bone which to delete
 				} else if (flagNeedTrips){
-					state=7;		//ask for trip data.			
+					state=7;		//ask for trip data.
+				} else if (flagDeleteGAVRTrip){
+					state=11;	
+				} else if (flagTripOver){
+					state=13;						
 				}else {state=6;}	//ack errror
 				break;
 			}//end case 2
@@ -652,15 +675,19 @@ void SendBone(BYTE whichTrip){
 					strLoc=0; 
 					noCarriage=fFalse;
 				}//end if sendingWhat < 9
-				else {state=5;flagOffloadTrip=fFalse;}							//The correct thing what sent, ok to exit
+				else {state=5;flagOffloadTrip=fFalse;PrintBone("D.");}												//Send D for done.The correct thing what sent, ok to exit
 				break;
 			}				
 			case 5:{
-				PrintBone("D.");												//Send D for done.
+				//Exit
+				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
+				strLoc=0;
+				noCarriage=fFalse;
 				flagSendBone=fFalse;
 				break;
 			}
 			case 6:{
+				//Error
 				PrintBone("E.");
 				state=5;
 				break;
@@ -699,28 +726,69 @@ void SendBone(BYTE whichTrip){
 				noCarriage=fFalse;
 				break;
 			}
+			case 11:{
+				if (!strncmp(recString,"A.",2)){state=12;}
+				else if (!strcmp(recString,sendString)){state=5; flagDeleteGAVRTrip=fFalse;}
+				else {state=6;}
+				break;
+			}//end case 11
+			case 12:{
+				char tempChar[5];
+				utoa(whichTrip,tempChar,10);
+				strcpy(sendString,"DB");
+				strcat(tempChar,".");
+				strcat(sendString,tempChar);
+				PrintBone(sendString);
+				state=1;													//Go back to receive state.
+				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
+				strLoc=0;
+				noCarriage=fFalse;
+				break;
+			}//end case 12
+			case 13:{
+				if (!strncmp(recString,"A.",2)){state=14;}
+				else if (!strncmp(recString,"ST.",3)){state=5; flagDeleteGAVRTrip=fFalse;}
+				else {state=6;}
+				break;
+			}//end case 13
+			case 14:{
+				PrintBone("ST.");
+				state=1;													//Go back to receive state.
+				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
+				strLoc=0;
+				noCarriage=fFalse;
+				break;
+			}//end case 14				
 			default: {flagSendBone=fFalse;break;}//default state
 		}//end switch
 	}//end while(flagSendBone)
 }//end SendBone
 
 /*************************************************************************************************************/
-
-//To print to WAVR, cariable needs to be false. Print to Bone requires WAVRorBone to be true
+//To print to WAVR, variable needs to be false. Print to Bone requires WAVRorBone to be true
 void printTimeDate(BOOL WAVRorBone, BOOL pTime,BOOL pDate){
 	if (WAVRorBone){ //Printing to BeagleBone
 		if (pTime){
 			char tempTime[11];
 			strcpy(tempTime,currentTime.getTime());
-			PrintBone(tempTime);
-			PutUartChBone('/');
+			if (flagReceiveBone2){
+				PrintBone2(tempTime);
+				PutUartChBone2('/');
+			} else {
+				PrintBone(tempTime);
+				PutUartChBone('/');
+			}			
 		}
 		if (pDate){
 			char tempDate[17];
 			strcpy(tempDate,currentTime.getDate());
->>>>>>> 8c93183bcc396b2e5ba9a010922e0a8c3520a4fa
-			PrintBone(tempDate);
-			PrintBone(".\0");
+			if (flagReceiveBone2){
+				PrintBone2(tempDate);
+				PrintBone2(".\0");				
+			} else {
+				PrintBone(tempDate);
+				PrintBone(".\0");
+			}			
 		}
 	} else { //Printing to GAVR
 		if (pTime){
