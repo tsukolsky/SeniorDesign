@@ -1,4 +1,5 @@
 //Method numbern two, just looking for peaks after minimums
+//Got method working roughly. Need to add error/"bump" functionality.
 #include <iostream>
 #include <math.h>
 #include <stdlib.h>
@@ -42,9 +43,37 @@ int main(){
 	//If the readings is > half the difference between (max -average)
 	unsigned int placement=currentMax, flagFound=0, localMax=0,goingDown=0;
 	if (placement > 200){
+		placement-=10;
+		localMax=placement;
+		for (placement > 0; placement--;){
+		cout << "Placement=" << placement << endl;
+			if (readings[placement] >= (average + (readings[currentMax]-average)/2)){
+				cout << "Looking at " << readings[placement] << ", location " << placement << endl;
+				//should be near a max, look for the max, if we see three decrementing numbers, assume that was th emaximum
+				if (readings[placement] >= readings[localMax]){
+					localMax=placement;
+				} else if ((readings[placement] < readings[placement+1]) && (readings[placement] < readings[localMax])){
+					goingDown++;
+					cout << "Saw downward slope." << endl;
+					if (goingDown>2){flagFound=1;break;}
+				} else{
+					cout << "Saw upward slope, reset..." << endl;
+					goingDown=0;
+				}
+			}//end if above average
+			else;	//do nothing, keep looping until you find it.
+		}//end for.
+		if (flagFound){
+			cout << "Found a local maximum at location " << localMax << " with value " << readings[localMax] << endl;
+			cout << "Difference in location = " << abs(localMax-currentMax) << endl;
+		} else {
+			cout << "Could not find a local maximum." << endl;
+		}//end if FlagFound
 	} else {
-		placement +=10;
+		placement+=10;
+		localMax=placement;
 		for (placement; placement < 300; placement++){
+		cout << "Placement=" << placement << endl;
 			if (readings[placement] >= (average + (readings[currentMax]-average)/2)){
 				cout << "Looking at " << readings[placement] << ", location " << placement << endl;
 				//should be near a max, look for the max, if we see three decrementing numbers, assume that was th emaximum
