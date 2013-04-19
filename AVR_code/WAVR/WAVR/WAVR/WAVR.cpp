@@ -60,6 +60,10 @@
 |			4/3-4/6- Debugging communication protocols between the two AVR chips. Communication from BeagleBone to the WAVR works,
 |				 BeagleBone to GAVR works in limited capacity (full functinoality to be added 4/7). See "myUart.h" for mroe 
 |				 information/revision history.
+|			4/18- Added functinality to check to see whether BeagleBone and GAVR are operating. if they aren't, pulse the POWER for them
+|				 and see if they can boot up. Added "Testing" define that allows startup timeout to be eliminated/unneeded. Also added
+|				 check of if the BeagleBone and GAVR are up and running. If they aren't when they're supposed to be, goes through a protocol
+|				 to reboot them.
 |================================================================================
 | Revisions Needed: 
 |		(1)	  3/26- Currently, if the WAVR is going to update the time, but not the date, on the GAVR it has to 
@@ -69,6 +73,7 @@
 |				date and time. Without valid GPS, rely on EEPROM (if restart) or else GAVR/USER. If GPS
 |				is sending valid data, user can't change date or time, they are "ignorant".
 |
+|		(2)	  4/18- Need to clear up difference between SPDR and SPDR0 ??? Recognizes both for some reason.
 |================================================================================
 | Notes:
 \*******************************************************************************/
@@ -88,8 +93,13 @@
 #include "eepromSaveRead.h"	//includes save and read functions as well as checking function called in ISR
 #include "wavrUart.h"
 
-
 using namespace std;
+
+//The next define enables/disables the Startup Timeout and therefore never initiates communication with the GAVR unless the BeagleBone sends it a time string. To enable, comment out line.
+#define TESTING
+
+//If we are working on the backup board, uncomment this since the processer is a ATmega324PA, not ATmeaga624PA
+//#define BACKUP
 
 //USART/BAUD defines
 #define FOSC				8000000			//1 MHz
@@ -269,7 +279,8 @@ ISR(TIMER2_OVF_vect){
 	else if ((flagReceivingGAVR || flagWaitingForSYNGAVR) && gavrReceiveTimeout > COMM_TIMEOUT_SEC){__killUARTrec(); flagReceivingGAVR=fFalse;flagGoToSleep=fTrue; flagWaitingForSYNGAVR=fFalse;flagNormalMode=fTrue;gavrReceiveTimeout=0; __enableCommINT();}
 	else if ((!flagReceivingGAVR && !flagWaitingForSYNGAVR) && gavrReceiveTimeout > 0){gavrReceiveTimeout=0;}
 	else;
-	
+
+#ifndef TESTING	
 	//Startup Tiemout for sending clock to GAVR
 	if ((flagFreshStart || restart) && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
 	else if ((flagFreshStart || restart) && startupTimeout > STARTUP_TIMEOUT_SEC){
@@ -282,6 +293,7 @@ ISR(TIMER2_OVF_vect){
 	} else if (!(flagFreshStart || restart) && startupTimeout > 0){startupTimeout=0;}
 	else;
 	sei();
+#endif
 }//End timer 2 overflow.
 
 
@@ -414,6 +426,33 @@ int main(void)
 			flagUpdateGAVRClock=fFalse;
 		}//end invalid dateTIme		
 				
+	#ifndef TESTING			
+		//See if Bone and GAVR are awake.
+		if (!flagShutdown && flagNormalMode){
+			//See if GAVR is aweake and working.
+			if (!(pinGAVRio & (1 << bnW3G0))){
+				//Watchdog isn't on, try and boot it up. First deliver interrupt
+				prtInterrupts |= (1 << bnGAVRint);
+				Wait_ms(1);
+				prtInterrupts &= ~(1 << bnGAVRint);
+				Wait_sec(1);
+				if (pinGAVRio & (1 <, bnW3G0)){
+					//Try cutting power, then powering back on
+					prtENABLE &= ~(1 << bnGAVRen);
+					Wait_sec(1);
+					prtENABLE |= (1 << bnGAVRen);
+				}
+			}
+			//See if BeagleBone is awake and working
+			if (!(pinBBio & (1 << bnW0B9))){
+				//Toggle power for this sucker
+				__killBeagleBone();
+				Wait_sec(2);
+				__enableBeagleBone();
+				Wait_sec(10);
+			}
+		}//end if !shutDown
+	#endif			
 	}//end while forever
 }
 
@@ -486,6 +525,9 @@ void AppInit(unsigned int ubrr){
 	__killLCD();
 	__killGPSandGAVR();
 
+	//Enable GPIO lines
+	ddrBBio &= (1 << bnW0B9);			//Whether BeagleBone is awake or not
+	ddrGAVRio &= ~(1 << bnW3G0);		//Whether GAVR is running or not
 	
 	//Enable INT2. Note* Pin change interrupts will NOT wake AVR from Power-Save mode. Only INT0-2 will.
 	__killCommINT();
@@ -630,22 +672,40 @@ void GetTemp(){
 
 	__killCommINT();
 
-	PRR0 &= ~(1 << PRSPI);	
-	SPCR |= (1 << MSTR)|(1 << SPE)|(1 << SPR0);			//enables SPI, master, fck/64
+	PRR0 &= ~(1 << PRSPI);
+		
+	#ifdef BACKUP
+		SPCR0 |= (1 << MSTR0)|(1 << SPE0)|(1 << SPR00);			//enables SPI, master, fck/64
+	#else
+		SPCR |= (1 << MSTR)|(1 << SPE)|(1 << SPR0);
+	#endif
+	
 	Wait_sec(2);
 	//Slave select goes low, sck goes low,  to signal start of transmission
 	prtSpi0 &= ~((1 << bnSck0)|(1 << bnSS0));
 	
 	cli();
 	//Write to buffer to start transmission
-	SPDR = 0x00;
-	//Wait for data to be receieved.
-	while (!(SPSR & (1 << SPIF)));
-	rawTemp = (SPDR0 << 8);
-	SPDR = 0x00;
-	while (!(SPSR & (1 << SPIF)));
-	rawTemp |= SPDR0;
-	
+	#ifdef BACKUP
+		SPDR0 = 0x00;
+		//Wait for data to be receieved.
+		while (!(SPSR0 & (1 << SPIF0)));
+		rawTemp = (SPDR0 << 8);
+		SPDR0 = 0x00;
+		while (!(SPSR0 & (1 << SPIF0)));
+		rawTemp |= SPDR0;
+		SPCR0=0x00;	
+	#else	
+		SPDR=0x00;
+		//Wait for data to be receieved.
+		while (!(SPSR & (1 << SPIF)));
+		rawTemp = (SPDR << 8);
+		SPDR= 0x00;
+		while (!(SPSR & (1 << SPIF)));
+		rawTemp |= SPDR;	
+		SPCR=0x00;
+	#endif
+		
 	//Set flag to correct value, update global value
 	//flagGoodTemp = (rawTemp < HIGH_TEMP) ? fTrue : fFalse;
 	globalTemp=rawTemp;
@@ -655,7 +715,6 @@ void GetTemp(){
 	
 	//Bring SS high, clear SPCR0 register and turn power off to SPI and device
 	prtSpi0 |= (1 << bnSS0)|(1 << bnSck0);
-	SPCR=0x00;	
 	//__killTemp();
 	PRR0 |= (1 << PRSPI);
 	
@@ -676,12 +735,9 @@ void PowerUp(WORD interval){
 	//Power on BeagleBone next, takes longer time.
 	__enableBeagleBone();
 	Wait_sec(interval*2);
-	//while (!(pinBBio & (1 << bnW0B9)));	//Wait for GPIO line to go high
 	
 	//Power on GAVR and Enable GPS
 	__enableGPSandGAVR();
-	//Wait_sec(interval);
-	//while (!(pinGAVRio & (1 << bnW3G0)));	//Wait for GPIO line to go high signifying correct boot
 
 	//Power on LCD
 	__enableLCD();
@@ -695,14 +751,18 @@ void PowerDown(){
 	__killCommINT();
 
 	//Signify interrupts, wait 6 seconds for all processing to stop.
-	prtInterrupts |= (1 << bnBBint)|(1 << bnGAVRint);
+	prtInterrupts |= (1 << bnGAVRint);
+	prtBONEINT |= (1 << bnBONEINT);
 	Wait_sec(6);
-	prtInterrupts &= ~((1 << bnBBint)|(1 << bnGAVRint));
+	prtInterrupts &= ~(1 << bnGAVRint);
+	prtBONEINT &= ~(1 << bnBONEINT);						//This signal is used instead of BBint on prtInterrupts since there is an issue with Kernel omap_mux on beaglebone.
+
+	//Kill LCD and GPS/GAVR first.
 	__killLCD();
 	__killGPSandGAVR();
 	
-	//Give the BeagleBone another 6 seconds to finish it's stuff, then kill it
-	Wait_sec(6);
+	//Give the BeagleBone another 15 seconds to execute "halt"
+	Wait_sec(15);
 	__killBeagleBone();
 	__killMain();
 }

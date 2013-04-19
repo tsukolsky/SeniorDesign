@@ -86,12 +86,14 @@
 /*******************************************/
 #define prtWAVRio	PORTK
 #define ddrWAVRio	DDRK
+#define pinWAVRio	PINK
 #define bnG2W5		2
 #define bnG1W4		1
 #define bnG0W3		0
 
 #define prtBBio0	PORTE
 #define ddrBBio0	DDRE
+#define pinBBio0	PINE
 #define bnG3BB12	5
 #define bnG4BB13	4
 #define bnG5BB14	3
@@ -99,6 +101,7 @@
 
 #define prtBBio1	PORTH
 #define ddrBBio1	DDRH
+#define pinBBio1	PINH
 #define bnG7BB16	6
 #define bnG8BB17	5
 #define bnG9BB18	4

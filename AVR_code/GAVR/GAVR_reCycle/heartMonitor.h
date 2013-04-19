@@ -31,14 +31,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "stdtypes.h"
-//#include "uartSend.h"
-
-#define prtLED PORTC
-#define ddrLED DDRC
-#define bnLED  5
-#define bnSPEEDLED  4
 
 #define UPWARD_SLOPE_MINIMUM 10
 #define DOWNWARD_SLOPE_MINUMUM 10
@@ -57,11 +50,11 @@ void PutUart0Ch(char ch);
 class heartMonitor{
 	public:
 		heartMonitor();
-		float getAveHR();
-		float getCurrentHR();
+		double getAveHR();
+		double getCurrentHR();
 		unsigned int getHRReadingsLow();
 		unsigned int getHRReadingsHigh();
-		void setHeartMonitor(float aveHR, unsigned int numReadings_L, unsigned int numReadings_H);
+		void setHeartMonitor(double aveHR, unsigned int numReadings_L, unsigned int numReadings_H);
 		void calculateHR(WORD *samples, int size);
 		
 	protected: 
@@ -69,7 +62,7 @@ class heartMonitor{
 		void resetMonitor();
 
 	private:
-		float aveHR, currentHR, hrWeight;
+		double aveHR, currentHR, hrWeight;
 		unsigned int numReadings_L, numReadings_H;
 		void softResetHR();
 		
@@ -94,18 +87,18 @@ void heartMonitor::softResetHR(){
 	__calculateHRWeight();
 }
 
-void heartMonitor::setHeartMonitor(float aveHR, unsigned int numReadings_L, unsigned int numReadings_H){
+void heartMonitor::setHeartMonitor(double aveHR, unsigned int numReadings_L, unsigned int numReadings_H){
 	this->aveHR=aveHR;
 	this->numReadings_L=numReadings_L;
 	this->numReadings_H=numReadings_H;
 	softResetHR();
 }
 
-float heartMonitor::getCurrentHR(){
+double heartMonitor::getCurrentHR(){
 	return currentHR;
 }
 
-float heartMonitor::getAveHR(){
+double heartMonitor::getAveHR(){
 	return aveHR;
 }
 

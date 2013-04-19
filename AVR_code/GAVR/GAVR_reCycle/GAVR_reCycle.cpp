@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 4/14/13
+| Last Revised: 4/18/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -55,7 +55,8 @@
 |			4/15- Added functinoalty for UART2 Receiving Bone to work. Added interrupt vectors for INT5 and UART2_RX, 
 |				  two flags (flagWaitingForBone2 and flagReceiveBone2), timeout capability, main loop call. Also
 |				  added functionality to deleteGAVRtrip protocol. Need to delete the GPS data on the bone, changed 
-|				  SendBone tactics in myUart.h. Added protocol in routine in main.
+|				  SendBone tactics in myUart.h. Added protocol in routine in main. 
+|			4/18- Finalized all PrintBone2 functionality. Fixed NAN's in trip. AverageSpeed needs to be fixed, very wrong
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -101,6 +102,8 @@ using namespace std;
 #include "myVector.h"
 #include "gavrUart.h"
 
+//Whether or not this will ask to communicate with WAVR after a startup timeout. Comment out if you want to enable the timeout
+#define TESTING
 
 /*****************************************/
 /**			UART Frequency/BAUD			**/
@@ -206,7 +209,7 @@ WORD HRSAMPLES[300];				//Array of HR Samples passed to the hrMonitor.h class.
 WORD numberOfSpeedOverflows=0;		//How many times the counter has overflowed for the reed switch. 
 BOOL flagNoSpeed=fFalse;			//Whether or not there is a default of NO speed right now.
 BOOL flagShowStats=fFalse;			//Whether we should show the statistics of the biker, debug
-
+WORD numberOfGAVRtrips=0;			//Represents how many trips are stored in EEPROM +1
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 //ISR for beaglebone uart input
@@ -373,7 +376,8 @@ ISR(TIMER2_OVF_vect){
 	else if ((WAVRtimeout > COMM_TIMEOUT_SEC) && (flagReceiveWAVR || flagWaitingForWAVR)){WAVRtimeout=0; flagReceiveWAVR=fFalse; flagWaitingForWAVR=fFalse; __enableCommINT();}
 	else if (!flagReceiveWAVR && !flagWaitingForWAVR && WAVRtimeout > 0){WAVRtimeout=0;}	//Both flags aren't set, make sure the timeout is 0
 	else;
-		
+
+#ifndef TESTING		
 	//If we just started, increment the startUpTimeout value. When it hits 30, logic goes into place for user to enter time and date
 	if (justStarted && startupTimeout <= STARTUP_TIMEOUT_SEC){startupTimeout++;}
 	else if (justStarted && startupTimeout > STARTUP_TIMEOUT_SEC){
@@ -384,7 +388,7 @@ ISR(TIMER2_OVF_vect){
 	}	
 	else if (!justStarted && startupTimeout > 0){startupTimeout=0;}
 	else;
-	
+#endif	
 }
 
 /*--------------------------END-Interrupt Service Routines--------------------------------------------------------------------------------*/
@@ -402,8 +406,8 @@ int main(void)
 	//Check the trip datas to see if there is something going on.
 	flagNewTripStartup=StartupTripEEPROM();		//If a new trip is needed, calls it. Otherwise is loads a new one. True means a new one started.
 	Wait_sec(2);
-	if (flagNewTripStartup){PrintBone("Resuming an old trip");}
-	else {PrintBone("Starting a new trip");}
+	if (flagNewTripStartup){PrintBone2("Resuming an old trip");}
+	else {PrintBone2("Starting a new trip");}
 	sei();
     while(fTrue)
     {	
@@ -429,7 +433,7 @@ int main(void)
 			prtDEBUGled2 &= ~(1 << bnDBG8);	
 		}		
 		
-		//If we are supposed to be getting something fromt he Bone's debug UART. WAVR and UART0 Bone have priority. Lowest on the totem pole.
+		//If we are supposed to be getting something from the Bone's debug UART. WAVR and UART0 Bone have priority. Lowest on the totem pole.
 		if (flagReceiveBone2 && !flagQUIT && !flagReceiveBone && !flagReceiveWAVR){
 			prtDEBUGled |= (1 << bnDBG3);
 			ReceiveBone2();
@@ -444,7 +448,7 @@ int main(void)
 		if ((flagGetWAVRtime || flagUpdateWAVRtime) && !flagWaitingForWAVR && !flagQUIT){
 			prtDEBUGled |= (1 << bnDBG2);		//third from top.
 			__killCommINT();
-			PrintBone("Sending to WAVR.");
+			PrintBone2("Sending to WAVR.");
 			SendWAVR();	
 			Wait_sec(2);
 			if (!flagReceiveWAVR && !flagWaitingForWAVR && !flagReceiveBone && !flagWaitingForBone){
@@ -468,51 +472,61 @@ int main(void)
 		/* Debugging/PRE-LCD functionality */
 		if (flagShowStats && !flagWaitingForBone && !flagWaitingForWAVR && !flagReceiveBone && !flagReceiveWAVR && !flagQUIT){
 			cli();
-			flagShowStats=0;
+			flagShowStats=fFalse;
+			//Put together a time string.
+			char timeString[40];
+			strcpy(timeString,currentTime.getTime());
+			strcat(timeString,"/");
+			strcat(timeString,currentTime.getDate());
+			strcat(timeString,".\0");
+			//Get other values to print
 			double speed=globalTrip.getCurrentSpeed();
 			double aveSpeed=globalTrip.getAverageSpeed();
 			double distance=globalTrip.getDistance();
 			double currentHR=globalTrip.getCurrentHR();
 			double averageHR=globalTrip.getAveHR();
 			char speedString[8],aveSpeedString[8],distanceString[8],currentHRstring[8],aveHRstring[8];
-			PrintBone("***");
-			PrintBone("Time/Date:");
-			printTimeDate(fTrue,fTrue,fTrue);
+			//Turn doubles and ints into strings.
 			dtostrf(speed,5,3,speedString);
 			dtostrf(aveSpeed,5,3,aveSpeedString);
 			dtostrf(distance,7,4,distanceString);
 			dtostrf(currentHR,4,2,currentHRstring);
 			dtostrf(averageHR,4,2,aveHRstring);
-			PrintBone("--Sp:");
-			PrintBone(speedString);
-			PrintBone("--AvSp:");
-			PrintBone(aveSpeedString);
-			PrintBone("--Di:");
-			PrintBone(distanceString);
-			PrintBone("--HR:");
-			PrintBone(currentHRstring);
-			PrintBone("--AvHR:");
-			PrintBone(aveHRstring);
-			PrintBone("*** ");
+			//Print them to Bone2 port (BONE RX5)
+			PrintBone2("***");
+			PrintBone2("Time/Date:");
+			PrintBone2(timeString);
+			PrintBone2("--Sp:");
+			PrintBone2(speedString);
+			PrintBone2("--AvSp:");
+			PrintBone2(aveSpeedString);
+			PrintBone2("--Di:");
+			PrintBone2(distanceString);
+			PrintBone2("--HR:");
+			PrintBone2(currentHRstring);
+			PrintBone2("--AvHR:");
+			PrintBone2(aveHRstring);
+			PrintBone2("*** ");
 			sei();
 		}
 		
 		//Here is where we react to what the LCD gets as inputs.		
 		if (flagLCDinput){
+			unsigned int whichGAVRTrip=1,whichUSBTrip=2;
 			//User changed the wheel size
 			if (flagUpdateWheelSize){
 				double tempWheelSize=-2;
 				globalTrip.setWheelSize(tempWheelSize);
 			}				
 			
+			//If User ends a trip, start a new one while saving everything in EEPROM
 			if (flagTripOver){						//If the trip is over, end this one then start a new one.
 				EndTripEEPROM();
 				StartNewTripEEPROM();
 				SendBone(0);						//Tell the bone a new trip was started.
 			}				
 			//If there is a USB and user asks to delete trips, offload a trip, or view trips on the USB, tell the Bone.
-			if (flagUSBinserted && (flagDeleteUSBTrip || flagNeedTrips || flagOffloadTrip)){
-				unsigned int whichGAVRTrip=1,whichUSBTrip=2;
+			if (flagUSBinserted){
 				//We want to view the trips, get them and push them onto a template stack.? or vector push?->Only looking at start date in first implementation(use char vector).
 				if (flagNeedTrips){
 					SendBone(0);
@@ -543,41 +557,55 @@ int main(void)
 						tempString=USBtripsHolder.pop_back();
 						USBtripsViewer.push_back(tempString);
 					}
-					
-				} else;
+				} else;//end if flagDeleteUSBTrip && !flagOffloadTrip
 				
-				//If we need to delete a trip from the GAVR, delete it and then tell bone to delete that GPS file.
-				if (flagDeleteGAVRTrip){
-					static BOOL continueWithDelete=fTrue;
-					int currentTripNumber=10;
-					//Make it so we can't delete the current trip.
-					if (whichGAVRTrip==currentTripNumber){
-						flagDeleteGAVRTrip=fFalse;
-						continueWithDelete=fFalse;
-					} 
-					//delete the trip
-					if (continueWithDelete){
-						DeleteTrip(whichGAVRTrip);	
-					}									
-					SendBone(whichGAVRTrip);					//Will leave flag high if there was an error. If there was, don't do anything
-					if (flagDeleteGAVRTrip){
-						//Flag is still high, don't delete on next round
-						continueWithDelete=fFalse;
-					} else {	
-						//successfully deleted GPS data from the BeagleBone. Next time this is called it will be for a new trip. Good to go.
-						continueWithDelete=fTrue;
-					}
-					
-				}//end if flagDeleteGAVRTrip
-				
-				//If user wants to see the trips on the GAVR, show them.
-				if (flagViewGAVRtrips){
-				}
 				//If user wants to see the trips on the Bone, show them if we have them
 				if (flagViewUSBTrips && !flagNeedTrips && flagHaveUSBTrips){
+					int numberOfTrips=USBtripsViewer.size();
+					PrintBone2("USB Trips:");
+					for (int i=0; i<numberOfTrips;i++){
+						char *tempString;
+						tempString=USBtripsViewer[i];
+						PrintBone2(tempString);
+						PutUartChBone2(',');
+					}
+					PrintBone2("end.");
+				}//end flagViewUSBTrips
+			}//end if USBinserted
+							
+			//If we need to delete a trip from the GAVR, delete it and then tell bone to delete that GPS file.
+			if (flagDeleteGAVRTrip){
+				static BOOL continueWithDelete=fTrue;
+				int currentTripNumber=10;
+				//Make it so we can't delete the current trip.
+				if (whichGAVRTrip==currentTripNumber){
+					flagDeleteGAVRTrip=fFalse;
+					continueWithDelete=fFalse;
+				} 
+				//delete the trip
+				if (continueWithDelete){
+					DeleteTrip(whichGAVRTrip);	
+				}									
+				SendBone(whichGAVRTrip);					//Will leave flag high if there was an error. If there was, don't do anything
+				if (flagDeleteGAVRTrip){
+					//Flag is still high, don't delete on next round
+					continueWithDelete=fFalse;
+				} else {	
+					//successfully deleted GPS data from the BeagleBone. Next time this is called it will be for a new trip. Good to go.
+					continueWithDelete=fTrue;
 				}
-			}//end if USBinserted && flagOffloatTrip
+				
+			}//end if flagDeleteGAVRTrip
 			
+			//If user wants to see the trips on the GAVR, show them.
+			if (flagViewGAVRtrips){
+					//Get number of trips stored in EEPROM
+					
+					//Declare variables for capture. Start Day, Start Year.
+					
+					//Print Those trips
+				}//end flagViewGAVRtrips
+
 		}//end LCD input	
 		
 		//If shutdown is imminent, go bye-bye	
@@ -603,8 +631,8 @@ int main(void)
 			flagGetWAVRtime=fTrue;
 		}			
 		
-		//Check GPIO pin H6 to see if USB is inserted.
-		if (PINH & (1 << BIT6)){
+		//Check GPIO pin H7 to see if USB is inserted.
+		if (pinBBio1 & (1 << bnG8BB17)){
 			flagUSBinserted=fTrue;	
 		} else {
 			flagUSBinserted=fFalse;
@@ -666,6 +694,12 @@ void AppInit(unsigned int ubrr){
 	prtDEBUGled = 0x00;	//all low
 	ddrDEBUGled2 |= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
 	prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
+	
+	//Enable GPIO lines used
+	ddrBBio1 &= ~(1 << bnG8BB17);		//This is an input
+	ddrWAVRio |= (1 << bnG0W3);			//This pin alerts the WAVR that we are in fact running
+	prtWAVRio |= (1 << bnG0W3);			//We are running, raise the IO line
+	
 	
 	//Disable power to most peripherals that may be powered off.
 	PRR0 |= (1 << PRTWI)|(1 << PRTIM1)|(1 << PRTIM0)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)

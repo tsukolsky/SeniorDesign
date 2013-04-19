@@ -2,7 +2,7 @@
 | eepromSaveRead.h
 | Author: Todd Sukolsky
 | Initial Build: 1/31/2013
-| Last Revised: 4/14/13
+| Last Revised: 4/18/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description:	This header contains the EEPROM memory locations for the variables
@@ -19,6 +19,10 @@
 |				  MoveTrip functionality. Changed "tripsFinished" and "numberofTrips" variables
 |				  to static EEMEM locations. Found, by looking at "*.elf" file the way EEPROM
 |				  is set up. 
+|			4/18- Fixed StartupTripEEPROM(). When a testing started and was killed before a save,
+|				  the EEPROM tripFinished BYTE was 0, but there was no wheelSize so nothing worked.
+|				  Now on it accurately starts a new trip if the number of trips is still less than 1,
+|				  signalling nothing was actually saved in the EEPROM.
 |================================================================================
 | *NOTES: (1) Floats are 4 BYTES, need to change this functionality to accurately get
 |			  ave hr, wheel size, distance, ave speed. Offset is going to grow and needs
@@ -37,7 +41,7 @@ using namespace std;
 //Declare the global variable that matters
 extern myTime currentTime;
 extern trip globalTrip;
-
+extern WORD numberOfGAVRtrips;
 
 #define FINISHED			1	
 #define UNFINISHED			0
@@ -156,6 +160,9 @@ void StartNewTripEEPROM(){
 	else {tempWheelSize=0;}							//Get the last trips wheel size. Probably haven't changed bikes.
 	globalTrip.setTripWTime((double)tempWheelSize, totalDays, currentTime.getYears());				//(re)set the trip, see "trip.h" for function
 	eeprom_update_byte(&eeTripFinished,UNFINISHED);													//Signify that the trip is indeed unfinished.
+	
+	//Update number of global trips in EEPROM. Should already be there.
+	numberOfGAVRtrips=numberOfTrips;
 	//Good to go, continue on.	
 }
 /*************************************************************************************************************/
@@ -164,38 +171,45 @@ void SaveTripSHUTDOWN(){
 	eeprom_update_byte(&eeTripFinished,UNFINISHED);
 }
 /*************************************************************************************************************/
-void LoadLastTripEEPROM(){
+void LoadLastTripEEPROM(){			//Called on startup.
 	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);				//little endian
-	WORD offset=INITIAL_OFFSET+((numberOfTrips-1)*BLOCK_SIZE);
-	//Load the trip data from EEPROM based on the numberOfTrips. If numberOfTrips=3, need to load the third. AVESPEED for that trip is located at 2+(24*2)
-	WORD startDays,startYear,minutesElapsed,daysElapsed,yearsElapsed,speedReadings_L,speedReadings_H,hrReadings_L,hrReadings_H;
-	float aveSpeed=eeprom_read_float((float*)(offset+AVESPEED));
-	float aveHR=eeprom_read_float((float*)(offset+AVEHR));
-	float distance=eeprom_read_float((float*)(offset+DISTANCE));
-	startDays=eeprom_read_word((WORD*)(offset+START_DAYS));
-	startYear=eeprom_read_word((WORD*)(offset+START_YEAR));
-	minutesElapsed=eeprom_read_word((WORD*)(offset+MINUTES_ELAPSED));
-	daysElapsed=eeprom_read_word((WORD*)(offset+DAYS_ELAPSED));
-	yearsElapsed=eeprom_read_word((WORD*)(offset+YEARS_ELAPSED));
-	speedReadings_L=eeprom_read_word((WORD*)(offset+SPEED_READINGS_L));
-	speedReadings_H=eeprom_read_word((WORD*)(offset+SPEED_READINGS_H));	//2^16-1=65535, so 65535*this number + SPEED_READINGS_LOW
-	hrReadings_L=eeprom_read_word((WORD*)(offset+HR_READINGS_L));
-	hrReadings_H=eeprom_read_word((WORD*)(offset+HR_READINGS_H));
-	float wheelSize=eeprom_read_float((float*)(offset+WHEEL_SIZE));
-	//Set the current trip with these parameters now.
-	globalTrip.setOdometer((double)aveSpeed,
-						(double)distance,
-						(double)wheelSize,
-						speedReadings_L,
-						speedReadings_H,
-						minutesElapsed,
-						daysElapsed,
-						yearsElapsed,
-						startDays,
-						startYear
-						);
-	globalTrip.setHeartMonitor((double)aveHR, hrReadings_L, hrReadings_H);	
-}
+	if (numberOfTrips>1){
+		//Update Global number of trips
+		numberOfGAVRtrips=numberOfTrips;
+		//Get Offset
+		WORD offset=INITIAL_OFFSET+((numberOfTrips-1)*BLOCK_SIZE);
+		//Load the trip data from EEPROM based on the numberOfTrips. If numberOfTrips=3, need to load the third. AVESPEED for that trip is located at 2+(24*2)
+		WORD startDays,startYear,minutesElapsed,daysElapsed,yearsElapsed,speedReadings_L,speedReadings_H,hrReadings_L,hrReadings_H;
+		float aveSpeed=eeprom_read_float((float*)(offset+AVESPEED));
+		float aveHR=eeprom_read_float((float*)(offset+AVEHR));
+		float distance=eeprom_read_float((float*)(offset+DISTANCE));
+		startDays=eeprom_read_word((WORD*)(offset+START_DAYS));
+		startYear=eeprom_read_word((WORD*)(offset+START_YEAR));
+		minutesElapsed=eeprom_read_word((WORD*)(offset+MINUTES_ELAPSED));
+		daysElapsed=eeprom_read_word((WORD*)(offset+DAYS_ELAPSED));
+		yearsElapsed=eeprom_read_word((WORD*)(offset+YEARS_ELAPSED));
+		speedReadings_L=eeprom_read_word((WORD*)(offset+SPEED_READINGS_L));
+		speedReadings_H=eeprom_read_word((WORD*)(offset+SPEED_READINGS_H));	//2^16-1=65535, so 65535*this number + SPEED_READINGS_LOW
+		hrReadings_L=eeprom_read_word((WORD*)(offset+HR_READINGS_L));
+		hrReadings_H=eeprom_read_word((WORD*)(offset+HR_READINGS_H));
+		float wheelSize=eeprom_read_float((float*)(offset+WHEEL_SIZE));
+		//Set the current trip with these parameters now.
+		globalTrip.setOdometer((double)aveSpeed,
+							(double)distance,
+							(double)wheelSize,
+							speedReadings_L,
+							speedReadings_H,
+							minutesElapsed,
+							daysElapsed,
+							yearsElapsed,
+							startDays,	
+							startYear
+							);
+		globalTrip.setHeartMonitor((double)aveHR, hrReadings_L, hrReadings_H);	
+	} else {
+		StartNewTripEEPROM();	//if there was a shutdown on the first trip, put in the default stuff. Mainly for testing
+	}//end if-else
+}//end function
 /*************************************************************************************************************/
 BOOL StartupTripEEPROM(){
 	//This is called when the AVR is rebooted/booted. It looks to see if the trip was finished, if it was then it starts a new trip. If not, it loads the old data
