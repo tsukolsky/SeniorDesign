@@ -152,7 +152,6 @@ void odometer::setOdometer(double swapAveSpeed, double swapDistance,
 
 //New speed data point
 void odometer::addSpeedDataPoint(WORD newDataPoint){
-	static BYTE counter=0;
 	//If this is first point or new wheelsize, or whatever, need to initialize all data points. 
 	if (firstRun || noSpeed){
 		for (int j=0; j<10;j++){
@@ -189,7 +188,7 @@ void odometer::addSpeedDataPoint(WORD newDataPoint){
 	tripDays%=365;
 	
 	//With new point we need to update all the statistics.
-	if (counter++>=3){updateSpeeds(); counter=0;}
+	updateSpeeds();
 }
 
 //The speed went to zero. Need to set flag for startup condition on new speed point, set currentSpeed to 0 so that if we are updating screen
@@ -222,8 +221,8 @@ void odometer::updateSpeeds(){
 	//Everyting is good up until this calculation.
 	currentSpeed=10.0*SECONDS_IN_HOUR*wheelSize/(sum*TIMER1_CLOCK_sec);		//calculate and update currentSpeed.
 	//Update average speed
-	__calculateSpeedWeight();
-	aveSpeed=aveSpeed*speedWeight + currentSpeed/speedPoints_L;
+	//__calculateSpeedWeight();
+	aveSpeed=(aveSpeed*(speedPoints_L-1)+currentSpeed)/speedPoints_L;
 }
 
 //Get the current speed
