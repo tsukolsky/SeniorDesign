@@ -497,7 +497,7 @@ void AppInit(unsigned int ubrr){
 	__killUARTrec();
 	
 	//Disable power to all peripherals
-	PRR0 |= (1 << PRTWI)|(1 << PRTIM0)|(1 << PRTIM1)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
+	PRR0 |= (1 << PRTWI)|(1 << PRTIM0)|(1 << PRUSART1)|(1 << PRTIM1)|(1 << PRADC)|(1 << PRSPI);  //Turn EVERYTHING off initially except USART0(UART0)
 
 	//Enable status LEDs
 	ddrSLEEPled |= (1 << bnSLEEPled);
@@ -526,7 +526,13 @@ void AppInit(unsigned int ubrr){
 	__killGPSandGAVR();
 
 	//Enable GPIO lines
-	ddrBBio &= (1 << bnW0B9);			//Whether BeagleBone is awake or not
+	ddrBBio |= (1 << bnW1B10)|(1 << bnW2B11);
+	prtBBio &= ~((1 << bnW1B10)|(1 << bnW2B11));
+	ddrW6B8 |= (1 << bnW6B8);
+	prtW6B8 |= (1 << bnW6B8);
+	ddrBBio &= ~(1 << bnW0B9);			//Whether BeagleBone is awake or not
+	ddrGAVRio |= (1 << bnW4G1)|(1 << bnW5G2);
+	prtGAVRio &= ~((1 << bnW4G1)|(1 << bnW5G2));
 	ddrGAVRio &= ~(1 << bnW3G0);		//Whether GAVR is running or not
 	
 	//Enable INT2. Note* Pin change interrupts will NOT wake AVR from Power-Save mode. Only INT0-2 will.
@@ -744,10 +750,13 @@ void PowerUp(WORD interval){
 	Wait_sec(interval);
 	
 	__enableCommINT();
+	PRR0 &= ~(1 << PRUSART1);
 	
 }
 /*************************************************************************************************************/
 void PowerDown(){
+	PRR0 |= (1 << PRUSART1);
+	
 	__killCommINT();
 
 	//Signify interrupts, wait 6 seconds for all processing to stop.

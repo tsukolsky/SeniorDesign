@@ -82,6 +82,23 @@
 |		      it should send trip5, trip4, etc... trip1. That way the GAVR can just show the trips
 |		      in the correct order.
 |		  (5) PINH6 serves as USB inserted or not GPIO. If low, no USB. if High, USB is inserted.
+|		  (6) Routine ShowUSBTrips is somewhat repetitive/stuipd. It would be smarter to make "nice" strings immidiately
+|			  when USB strings come in, or immediately after, however this works as well. One idea is to call a function
+|			  after ReceiveBone is called and flagHaveUSBTrips is high and move those stings into a nicer form in a different vector.
+|===============================================================================
+| Debug LED Configuration: Top-Bottom=LED13->LED20, LED10->12
+|									  DBG0->DBG7,   DBG8->10
+|		DBG0=flagQuit
+|		DBG1=SpeedInterrupt
+|		DBG2=SendWAVR
+|		DBG3=ReceiveBone2
+|		DBG4=InterruptFromWAVR
+|		DBG5=<>
+|		DBG6=<>
+|		DBG7=flagUSBinserted
+|		DBG8=ReceiveBone
+|		DBG9=ReceiveWAVR
+|		DBG10=RTCosc
 \*******************************************************************************/
 
 using namespace std;
@@ -186,7 +203,7 @@ BOOL flagLCDinput, flagUSBinserted, flagUpdateWheelSize,flagTripOver, flagDelete
 /* flagUpdateWheelSize: User updated the wheel size, set the wheel size of the trip to this new one.			*/
 /* flagTripOver: User just stopped the current trip, set up a new one.											*/
 /* flagDeleteGAVRTrip: Deleting a trip in the GAVR EEPROM.														*/
-/* flagDeleteBoneTrip: Delete a trip on the BeagleBone.															*/
+/* flagDeleteUSBTrip: Delete a trip on the BeagleBone.															*/
 /*==============================================================================================================*/
 
 /*==============================================================================================================*/
@@ -204,12 +221,13 @@ BOOL flagHaveUSBTrips, flagOffloadTrip, flagNeedTrips, flagViewUSBTrips, flagVie
 myTime currentTime;					//The clock, must be global. Initiated as nothing.
 trip globalTrip;					//Trip must be global as well, initialed in normal way. Startup procedure sets it. 
 myVector<char *> USBtripsViewer;	//Vector to hold trip data sent over by the USB
-myVector<char *> USBtripsHolder;
 WORD HRSAMPLES[300];				//Array of HR Samples passed to the hrMonitor.h class.
 WORD numberOfSpeedOverflows=0;		//How many times the counter has overflowed for the reed switch. 
 BOOL flagNoSpeed=fFalse;			//Whether or not there is a default of NO speed right now.
 BOOL flagShowStats=fFalse;			//Whether we should show the statistics of the biker, debug
 WORD numberOfGAVRtrips=0;			//Represents how many trips are stored in EEPROM +1
+int whichTripToOffload=-1, whichUSBtripToDelete=-1,whichGAVRtripToDelete=-1;
+unsigned int daysInMonth[12]={31,28,31,30,31,30,31,31,30,31,30,31};
 
 /*--------------------------Interrupt Service Routines------------------------------------------------------------------------------------*/
 //ISR for beaglebone uart input
@@ -248,6 +266,7 @@ ISR(USART2_RX_vect){
 	}	
 	UCSR2B &= ~(1 << RXCIE2);
 	sei();
+
 }	
 /************************************************************************/
 //INT0, getting something from the watchdog
@@ -282,12 +301,12 @@ ISR(INT5_vect){
 	sei();
 }
 /************************************************************************/
+
 //INT6-> Speed magnet went around.
 ISR(INT6_vect){
 	//Do something with speed/odometer/trip thing.
 	cli();
 	WORD value=TCNT1;
-	static int counter=0;
 	if (value > 2){
 		prtDEBUGled |= (1 << bnDBG1);
 		if (flagNoSpeed){
@@ -297,7 +316,6 @@ ISR(INT6_vect){
 			globalTrip.addSpeedDataPoint(value+numberOfSpeedOverflows*TIMER1_OFFSET);
 		}
 		numberOfSpeedOverflows=0;	
-		if (counter++ >= 9){flagShowStats=fTrue;counter=0;}
 		Wait_ms(50);
 		prtDEBUGled &= ~(1 << bnDBG1);
 	}	
@@ -314,16 +332,22 @@ ISR(INT7_vect){
 }
 /************************************************************************/
 ISR(TIMER0_COMPA_vect){
-	cli();
-	//Declare variables
-	volatile WORD signal=0;
-	volatile static unsigned int location=0;
+	cli(); 
+	static BOOL flagGettingHR=fFalse;
+	//Take a reading every 10 seconds.
+	if (currentTime.getSeconds()%10==0 && !flagGettingHR){
+		flagGettingHR=fTrue;
+	} 
+	if (flagGettingHR){
+		//Declare variables
+		volatile WORD signal=0;
+		volatile static unsigned int location=0;
 	
-	//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
-	signal = GetADC();		//retrieves ADC reading on ADC0
-	HRSAMPLES[location++]=signal;
-	if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300);}
-
+		//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
+		signal = GetADC();		//retrieves ADC reading on ADC0
+		HRSAMPLES[location++]=signal;
+		if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300);}
+	}
 	//Re-enable interrupts
 	sei();
 }
@@ -338,11 +362,13 @@ ISR(TIMER1_OVF_vect){
 	}
 	sei();
 }
+
 /************************************************************************/
 ISR(TIMER2_OVF_vect){
 	volatile static int WAVRtimeout=0, BONEtimeout=0, startupTimeout=0, sendingWAVRtimeout=0, BONE2timeout=0, sendingBoneTimeout=0;
 	prtDEBUGled2 ^= (1 << bnDBG10);
 	
+	if (currentTime.getSeconds()%10==0){flagShowStats=fTrue;}
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
 	//Timeout functionality
@@ -421,7 +447,7 @@ int main(void)
 			}
 			prtDEBUGled2 &= ~(1 << bnDBG9);
 		}
-		
+
 		//Receiving from the Bone. Bone has priority over WAVR
 		if (flagReceiveBone && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
@@ -441,9 +467,9 @@ int main(void)
 			if (!flagReceiveWAVR && flagWaitingForWAVR){
 				__enableCommINT();
 			}
-			prtDEBUGled2 &= ~(1 << bnDBG3);
+			prtDEBUGled &= ~(1 << bnDBG3);
 		}
-		
+
 		//Send either "I need the date or time" or "Here is the date and time you asked for. If we are still waiting for WAVR, then don't send anything.
 		if ((flagGetWAVRtime || flagUpdateWAVRtime) && !flagWaitingForWAVR && !flagQUIT){
 			prtDEBUGled |= (1 << bnDBG2);		//third from top.
@@ -467,9 +493,12 @@ int main(void)
 			flagWAVRtime=fFalse;
 			flagGetWAVRtime=fFalse;							//SendWAVR() will set the flags down accordingly
 			
-		}			
+		}
 		
-		/* Debugging/PRE-LCD functionality */
+		
+/**************testing procedure start********************/					
+#ifdef TESTING		
+		/* Debugging/PRE-LCD functionality. Prints every 5 seconds */
 		if (flagShowStats && !flagWaitingForBone && !flagWaitingForWAVR && !flagReceiveBone && !flagReceiveWAVR && !flagQUIT){
 			cli();
 			flagShowStats=fFalse;
@@ -507,12 +536,12 @@ int main(void)
 			PrintBone2("--AvHR:");
 			PrintBone2(aveHRstring);
 			PrintBone2("*** ");
+			flagShowStats=fFalse;
 			sei();
 		}
 		
 		//Here is where we react to what the LCD gets as inputs.		
 		if (flagLCDinput){
-			unsigned int whichGAVRTrip=1,whichUSBTrip=2;
 			//User changed the wheel size
 			if (flagUpdateWheelSize){
 				double tempWheelSize=-2;
@@ -524,7 +553,77 @@ int main(void)
 				EndTripEEPROM();
 				StartNewTripEEPROM();
 				SendBone(0);						//Tell the bone a new trip was started.
-			}				
+				//Flag is reset in SendBone section.
+			}		
+				
+			//If we need to delete a trip from the GAVR, delete it and then tell bone to delete that GPS file.
+			if (flagDeleteGAVRTrip){
+				static BOOL continueWithDelete=fTrue;
+				int currentTripNumber=10;
+				//Make it so we can't delete the current trip.
+				if (whichGAVRtripToDelete==currentTripNumber){
+					flagDeleteGAVRTrip=fFalse;
+					continueWithDelete=fFalse;
+				}
+				//delete the trip
+				if (continueWithDelete){
+					DeleteTrip(whichGAVRtripToDelete);
+				}
+				SendBone(whichGAVRtripToDelete);					//Will leave flag high if there was an error. If there was, don't do anything
+				if (flagDeleteGAVRTrip){
+					//Flag is still high, don't delete on next round
+					continueWithDelete=fFalse;
+				} else {
+					//successfully deleted GPS data from the BeagleBone. Next time this is called it will be for a new trip. Good to go.
+					continueWithDelete=fTrue;
+					whichGAVRtripToDelete=-1;
+				}	
+				
+			}//end if flagDeleteGAVRTrip
+			
+			//If user wants to see the trips on the GAVR, show them.
+			if (flagViewGAVRtrips){
+				//Declare variables for capture in HEAP memory. Start Day, Start Year, strings.
+				WORD tripDays,tripMonth=1,tripYear=2013;
+				myVector<char *> tripIDs;
+				unsigned int offset;
+				for (int i=0; i<numberOfGAVRtrips;i++){
+					tripMonth=1;
+					offset=i*BLOCK_SIZE+INITIAL_OFFSET;
+					tripDays=eeprom_read_word((WORD *)(offset+START_DAYS));
+					tripYear=eeprom_read_word((WORD *)(offset+START_YEAR));
+					//Get what month it is, also days.
+					while (tripDays>daysInMonth[tripMonth-1]){
+						tripDays-=daysInMonth[tripMonth-1];
+						tripMonth++;
+					}
+					if (tripDays>28 && tripMonth==2){
+						tripDays-=daysInMonth[tripMonth-1];
+						tripMonth++;
+					}
+					//Assemble the strings. Define array of stack strings
+					char *tempString[4];
+					utoa(tripMonth,tempString[0],10);
+					utoa(tripDays,tempString[1],10);
+					utoa(tripYear,tempString[2],10);
+					//Put together the tempString
+					strcpy(tempString[3],"Trip ");
+					strcat(tempString[3],tempString[0]);
+					strcat(tempString[3],"/");
+					strcat(tempString[3],tempString[1]);
+					strcat(tempString[3],"/");
+					strcat(tempString[3],tempString[2]);
+					//String complete, push onto the vector
+					tripIDs.push_back(tempString[3]);
+				}
+				//Print Those trips
+				for (int j=0;j<tripIDs.size();j++){
+					PrintBone2(tripIDs[j]);
+				}
+				flagViewGAVRtrips=fFalse;
+			}//end flagViewGAVRtrips			
+			
+			
 			//If there is a USB and user asks to delete trips, offload a trip, or view trips on the USB, tell the Bone.
 			if (flagUSBinserted){
 				//We want to view the trips, get them and push them onto a template stack.? or vector push?->Only looking at start date in first implementation(use char vector).
@@ -533,80 +632,105 @@ int main(void)
 				}
 				//Get which trip the user wants to offload and send it to the Bone
 				if (flagOffloadTrip && !flagDeleteUSBTrip){
-					SendBone(whichGAVRTrip);
+					SendBone(whichTripToOffload);
 				//Tell the beaglebone to delete one of it's trips.
 				} else if (flagDeleteUSBTrip && !flagOffloadTrip){
+					myVector<char *> USBtripsHolder;
+					
 					//tell the bone to delete the trip.
-					SendBone(whichUSBTrip);
+					SendBone(whichUSBtripToDelete);
 					
 					//Delete that trip from the USBtripsViewer
 					BYTE numberOfUSBTrips=USBtripsViewer.size();
 					
 					//If there are 4 trips and we want to delete trip two, we pop trips 4->3 into new buffer, then pop oen to delete, then push 3->4 back on (now 2->3).
-					BYTE numberOfPops=numberOfUSBTrips-whichUSBTrip;
-					char * tempString;
+					BYTE numberOfPops=numberOfUSBTrips-whichUSBtripToDelete;
 					for (int i=0; i<numberOfPops;i++){
-						tempString=USBtripsViewer.pop_back();
+						char *tempString;
+						strcpy(tempString,USBtripsViewer.pop_back());
 						USBtripsHolder.push_back(tempString);
 					}
 					//Pop the one to delete off
-					tempString=USBtripsViewer.pop_back();
+					char *tString;
+					strcpy(tString,USBtripsViewer.pop_back());
 					
 					//Push them back onto the USBtripsViewer.
 					for (int i=0; i<numberOfPops; i++){
-						tempString=USBtripsHolder.pop_back();
+						char *tempString;
+						strcpy(tempString,USBtripsHolder.pop_back());
 						USBtripsViewer.push_back(tempString);
 					}
 				} else;//end if flagDeleteUSBTrip && !flagOffloadTrip
 				
 				//If user wants to see the trips on the Bone, show them if we have them
 				if (flagViewUSBTrips && !flagNeedTrips && flagHaveUSBTrips){
+					BOOL flagPrint=fTrue;
 					int numberOfTrips=USBtripsViewer.size();
-					PrintBone2("USB Trips:");
+					myVector<char *> usbtripIDs;
+					
+					//Parse the string and make a nicer string.
 					for (int i=0; i<numberOfTrips;i++){
-						char *tempString;
-						tempString=USBtripsViewer[i];
-						PrintBone2(tempString);
-						PutUartChBone2(',');
-					}
-					PrintBone2("end.");
+						char *tempStrings[5];					//[0]=popped from viewer, [1]=days,[2]=months,[3]=years,[4]=assembled string.
+						tempStrings[0]=USBtripsViewer[i];
+						
+						//Need to find what the days were. Locatoin=location in tempStrings[0], dayPlacement=tempStings[1], yearPlacement=tempStrings[3], tDays and months used for getting right value.
+						int location=1, dayPlacement=0, yearPlacement=0, tripDays=1,tripMonth=1;
+						
+						//Get the number of days otu of the string
+						while (tempStrings[0][location] != '/' && tempStrings[0][location] != '.' && tempStrings[0][location] != '\0'){
+							tempStrings[1][dayPlacement++]=tempStrings[0][location++];
+						}//broke
+						if (tempStrings[0][location]=='/'){
+							int yearPlacement=0;
+							location++;
+							while (tempStrings[0][location] != '.' && tempStrings[0][location] != '\0'){
+								tempStrings[3][yearPlacement++]=tempStrings[0][location++];
+							}//end while moving year	
+						}//end if we found '/'
+						
+						//Turn dayString into a number of days.
+						if (dayPlacement>0 && yearPlacement>0){
+							tripDays=atoi(tempStrings[1]);
+							tripMonth=1;
+							//Get what month it is, also days.
+							while (tripDays>daysInMonth[tripMonth-1]){
+								tripDays-=daysInMonth[tripMonth-1];
+								tripMonth++;
+							}
+							if (tripDays>28 && tripMonth==2){
+								tripDays-=daysInMonth[tripMonth-1];
+								tripMonth++;
+							}//end finding of days and month
+							utoa(tripDays,tempStrings[1],10);
+							utoa(tripMonth,tempStrings[2],10);
+							//Merge all strings into a start date in tempStrings[4]
+							strcpy(tempStrings[4],tempStrings[2]);
+							strcat(tempStrings[4],"/");
+							strcat(tempStrings[4],tempStrings[1]);
+							strcat(tempStrings[4],"/");
+							strcat(tempStrings[4],tempStrings[3]);
+							//Push onto usbtripIds
+							usbtripIDs.push_back(tempStrings[4]);	
+						}//end if day and year placement>0
+						else {flagPrint=fFalse;}
+					}//end for i<numberOfTrips
+					
+					if (flagPrint){
+						PrintBone2("USB Trips: ");
+						for (int i=0; i<usbtripIDs.size(); i++){
+							PrintBone2(usbtripIDs[i]);
+							PrintBone2("...");
+						}//end for
+					} else {
+						PrintBone2("Error with trip strings.");
+					}//end if flagPrint
+					flagViewUSBTrips=fFalse;
 				}//end flagViewUSBTrips
 			}//end if USBinserted
-							
-			//If we need to delete a trip from the GAVR, delete it and then tell bone to delete that GPS file.
-			if (flagDeleteGAVRTrip){
-				static BOOL continueWithDelete=fTrue;
-				int currentTripNumber=10;
-				//Make it so we can't delete the current trip.
-				if (whichGAVRTrip==currentTripNumber){
-					flagDeleteGAVRTrip=fFalse;
-					continueWithDelete=fFalse;
-				} 
-				//delete the trip
-				if (continueWithDelete){
-					DeleteTrip(whichGAVRTrip);	
-				}									
-				SendBone(whichGAVRTrip);					//Will leave flag high if there was an error. If there was, don't do anything
-				if (flagDeleteGAVRTrip){
-					//Flag is still high, don't delete on next round
-					continueWithDelete=fFalse;
-				} else {	
-					//successfully deleted GPS data from the BeagleBone. Next time this is called it will be for a new trip. Good to go.
-					continueWithDelete=fTrue;
-				}
-				
-			}//end if flagDeleteGAVRTrip
-			
-			//If user wants to see the trips on the GAVR, show them.
-			if (flagViewGAVRtrips){
-					//Get number of trips stored in EEPROM
-					
-					//Declare variables for capture. Start Day, Start Year.
-					
-					//Print Those trips
-				}//end flagViewGAVRtrips
-
 		}//end LCD input	
+#endif
+
+/**************testing procedure end********************/
 		
 		//If shutdown is imminent, go bye-bye	
 		if (flagQUIT){
@@ -632,11 +756,13 @@ int main(void)
 		}			
 		
 		//Check GPIO pin H7 to see if USB is inserted.
-		if (pinBBio1 & (1 << bnG8BB17)){
-			flagUSBinserted=fTrue;	
-		} else {
+		if ((pinBBio1 & (1 << bnG8BB17))&& !flagUSBinserted){
+			flagUSBinserted=fTrue;
+			prtDEBUGled |= (1 << bnDBG7);	
+		} else if (!(pinBBio1 & (1 << bnG8BB17)) && flagUSBinserted){
 			flagUSBinserted=fFalse;
-		}
+			prtDEBUGled &= ~(1 << bnDBG7);
+		}//end if-else USB inserted.
 							
     }//end while
 }//end main
@@ -695,7 +821,7 @@ void AppInit(unsigned int ubrr){
 	ddrDEBUGled2 |= (1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8);
 	prtDEBUGled2 &= ~((1 << bnDBG10)|(1 << bnDBG9)|(1 << bnDBG8));
 	
-	//Enable GPIO lines used
+	//Enable GPIO lines used and not used to inputs with pull down (extra ones already enabled that way.
 	ddrBBio1 &= ~(1 << bnG8BB17);		//This is an input
 	ddrWAVRio |= (1 << bnG0W3);			//This pin alerts the WAVR that we are in fact running
 	prtWAVRio |= (1 << bnG0W3);			//We are running, raise the IO line

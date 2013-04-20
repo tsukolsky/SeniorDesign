@@ -56,10 +56,11 @@
 //Declare external flags, clock and trip.
 extern BOOL flagReceiveWAVR, flagReceiveBone, flagReceiveBone2, flagSendWAVR, flagSendBone, flagGetUserClock, flagWAVRtime, flagGetWAVRtime,justStarted;
 extern BOOL flagInvalidDateTime, flagNewTripStartup, flagUpdateWAVRtime,flagWaitingForWAVR, flagTripOver;
-extern BOOL flagOffloadTrip, flagNeedTrips, flagDeleteUSBTrip, flagDeleteGAVRTrip, flagHaveUSBTrips;
+extern BOOL flagOffloadTrip, flagNeedTrips, flagDeleteUSBTrip, flagDeleteGAVRTrip, flagHaveUSBTrips, flagViewGAVRtrips, flagViewUSBTrips;
 extern myTime currentTime;
 extern trip globalTrip;
-extern myVector<char *> USBtripsViewer, USBtripsHolder;
+extern myVector<char *> USBtripsViewer;
+extern int whichTripToOffload, whichUSBtripToDelete,whichGAVRtripToDelete;
 
 //Forward Declaration
 void printTimeDate(BOOL WAVRorBone, BOOL pTime, BOOL pDate);
@@ -427,17 +428,18 @@ void ReceiveBone2(){
 			case 0:{
 				//Get the first character. If a '.', exit to bad state.
 				strLoc=0;
-				recChar = UDR0;
+				recChar = UDR2;
 				if (recChar=='.'){
 					state=3;
 				} else  {recString[strLoc++]=recChar; state=1;}
 				break;
 			}//end case 0
 			case 1:{
+				PrintBone2("state1.");
 				while (noCarriage && flagReceiveBone2){	//while there isn't a timeout and no carry
-					while ((!(UCSR0A & (1 << RXC0))) && flagReceiveBone2);		//get the next character
+					while ((!(UCSR2A & (1 << RXC2))) && flagReceiveBone2);		//get the next character
 						if (!flagReceiveBone){break;}					//if there was a timeout, break out and reset state
-						recChar=UDR0;
+						recChar=UDR2;
 						recString[strLoc++]=recChar;
 						if (recChar == '.' || recChar=='\0'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
 						else if (strLoc >= 39){state=3;noCarriage=fFalse;}
@@ -446,10 +448,55 @@ void ReceiveBone2(){
 				break;
 				}//end case 1
 			case 2:{
-				if (!strncmp(recString,"d.",2)){printTimeDate(fTrue,fFalse,fTrue); state=4;}
-				else if (!strncmp(recString,"t.",2)){printTimeDate(fTrue,fTrue,fFalse);state=4;}
-				else if (!strncmp(recString,"b.",2)){printTimeDate(fTrue,fTrue,fTrue);state=4;}
+				PrintBone2("state2");
+				if (!strncmp(recString,"b.",2)){printTimeDate(fTrue,fTrue,fTrue);state=4;}
+				else if (!strncmp(recString,"hi.",3)){PrintBone2("Hello BeagleBone.");state=4;}
 				else if (!strncmp(recString,"s.",2)){saveDateTime_eeprom(fTrue,fFalse);PrintBone(recString);state=4;}
+				else if (!strncmp(recString,"vg.",3)){flagViewGAVRtrips=fTrue;state=4;}
+				else if (!strncmp(recString,"vu.",3)){
+					if (flagHaveUSBTrips){
+						flagViewUSBTrips=fTrue;
+					} else {
+						flagViewUSBTrips=fFalse;
+						PrintBone2("NO USB TRIPS.");
+					}
+					state=4;
+				} else if (!strncmp(recString,"new.",4)){flagTripOver=fTrue; state=4;}
+				/********************************************offload trip*****************************************/
+				else if (recString[0]=='o'){
+					whichTripToOffload=atoi((const char *)recString[1]);
+					if (whichTripToOffload>0 && whichTripToOffload<=numberOfGAVRtrips){
+						flagOffloadTrip=fTrue;
+					}else{
+						flagOffloadTrip=fFalse;
+						whichTripToOffload=-1;
+						PrintBone2("No trip with that number.");
+					}//end if valid trip.
+					state=4;
+				/********************************************delete USB/GAVR trip*********************************/
+				}else if (recString[0]=='d'){
+					if (recString[1]=='u'){
+						whichUSBtripToDelete=atoi((const char *)recString[2]);
+						if (flagHaveUSBTrips && whichUSBtripToDelete <=USBtripsViewer.size()){
+							flagDeleteUSBTrip=fTrue;
+						} else {
+							flagDeleteUSBTrip=fFalse;
+							whichUSBtripToDelete=-1;
+							PrintBone2("Invalid USB trip.");
+						}//end if-else valid number
+					} else if (recString[1]=='g'){
+						whichGAVRtripToDelete=atoi((const char *)recString[2]);
+						if (whichGAVRtripToDelete>0 && whichGAVRtripToDelete<=numberOfGAVRtrips){
+							flagDeleteGAVRTrip=fTrue;
+						} else {
+							flagDeleteGAVRTrip=fFalse;
+							whichGAVRtripToDelete=-1;
+							PrintBone2("Invalid GAVR trip.");
+						}//end if valid gavr trip
+					}
+					else;//end if-elseif-else
+					state=4;
+				}				
 				//else if (!strncmp(recString,""))		
 				else {state=3;}						
 				break;
@@ -568,7 +615,7 @@ void SendBone(BYTE whichTrip){
 	WORD startDays,startYear,minutesElapsed,daysElapsed,yearsElapsed;
 	float aveSpeed=0, aveHR=0, distance=0;
 	
-	//Dependent flags: flagDeleteBoneTrip, flagNeedTrips, flagOffloadTrip
+	//Dependent flags: flagDeleteUSBTrip, flagNeedTrips, flagOffloadTrip
 	if (whichTrip != 0 && flagOffloadTrip){
 		//Get the trip data we need to send to the beaglebone. We are offloading trip data to the BeagleBone	WORD offset=2+((numberOfTrips-1)*26);
 		//Load the trip data from EEPROM based on the whichTrip. If whichTrip=3, need to load the third. AVESPEED for that trip is located at 2+(26*2)
@@ -746,7 +793,7 @@ void SendBone(BYTE whichTrip){
 			}//end case 12
 			case 13:{
 				if (!strncmp(recString,"A.",2)){state=14;}
-				else if (!strncmp(recString,"ST.",3)){state=5; flagDeleteGAVRTrip=fFalse;}
+				else if (!strncmp(recString,"ST.",3)){state=5; flagTripOver=fFalse;}
 				else {state=6;}
 				break;
 			}//end case 13
