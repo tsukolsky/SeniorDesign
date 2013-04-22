@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 2/26/2013
-| Last Revised: 4/7/2013
+| Last Revised: 4/21/2013
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This class is defined as an odometer. Odometer functions include
@@ -16,6 +16,12 @@
 |					optimizing now.
 |			  4/7:  Changed some declarations and added some get functions for resetting trip
 |					datas and such.
+|			  4/21: Changed implementation of time elapsed to only focus on time. Speed points
+|					are still more accurate than distance/time since the time maybe less than an hour.
+|					More importantly, it's frustrating to me as a bike when I sit and do nothing, but
+|					the saverage speed goes down. I believe average speed should only be assessed WHILE
+|					the biker is moving, so this is how to implelment that. A better method would be to
+|					let data points hit overflow, then use the minutes as well as a weight.
 |================================================================================
 | *NOTES:
 \*******************************************************************************/

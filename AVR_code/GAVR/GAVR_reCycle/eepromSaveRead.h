@@ -2,7 +2,7 @@
 | eepromSaveRead.h
 | Author: Todd Sukolsky
 | Initial Build: 1/31/2013
-| Last Revised: 4/18/13
+| Last Revised: 4/21/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description:	This header contains the EEPROM memory locations for the variables
@@ -23,6 +23,7 @@
 |				  the EEPROM tripFinished BYTE was 0, but there was no wheelSize so nothing worked.
 |				  Now on it accurately starts a new trip if the number of trips is still less than 1,
 |				  signalling nothing was actually saved in the EEPROM.
+|			4/21- Slight tweak to offsets and how they function. Everyting working now with saving.
 |================================================================================
 | *NOTES: (1) Floats are 4 BYTES, need to change this functionality to accurately get
 |			  ave hr, wheel size, distance, ave speed. Offset is going to grow and needs
