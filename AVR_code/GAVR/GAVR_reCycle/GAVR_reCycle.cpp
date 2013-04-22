@@ -383,8 +383,8 @@ ISR(TIMER2_OVF_vect){
 	else;
 	
 	//UART0/Sending to Bone timeout
-	if (flagSendBone && sendingBoneTimeout <= COMM_TIMEOUT_SEC){sendingBoneTimeout++;}
-	else if (flagSendBone && sendingBoneTimeout > COMM_TIMEOUT_SEC){sendingBoneTimeout=0;flagSendBone=fFalse; __enableCommINT();}		//this doesn't allow for a resend.
+	if (flagSendBone && sendingBoneTimeout <= COMM_TIMEOUT_SEC*2){sendingBoneTimeout++;}
+	else if (flagSendBone && sendingBoneTimeout > COMM_TIMEOUT_SEC*2){sendingBoneTimeout=0;flagSendBone=fFalse; __enableCommINT();}		//this doesn't allow for a resend.
 	else if (!flagSendBone && sendingBoneTimeout > 0){sendingBoneTimeout=0;}
 	else;	
 	
@@ -702,7 +702,19 @@ int main(void)
 				}
 				//Get which trip the user wants to offload and send it to the Bone
 				if (flagOffloadTrip && !flagDeleteUSBTrip){
+					//static BOOL okToTry=fTrue;
+					//static BYTE okToTryTime=(currentTime.getSeconds()+10)%60;
+					PrintBone2("Offloading trip.");
+					prtDEBUGled |= (1 << bnDBG5);
 					SendBone(whichTripToOffload);
+					prtDEBUGled &= ~(1 << bnDBG5);
+				/*	if (flagOffloadTrip){
+						if (!okToTry && currentTime.getSeconds()==okToTryTime){
+							okToTry=fTrue;	
+						} else if (!okToTry && currentTime.getSeconds()!=okToTryTime){
+							okToTry=fFalse;
+						} else;
+					}//end if offload was unsuccessful, should wait for a few seconds.*/
 				//Tell the beaglebone to delete one of it's trips.
 				} else if (flagDeleteUSBTrip && !flagOffloadTrip){
 					myVector<char *> USBtripsHolder;

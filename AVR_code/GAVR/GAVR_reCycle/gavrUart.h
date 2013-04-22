@@ -465,19 +465,26 @@ void ReceiveBone2(){
 				} else if (!strncmp(recString,"new.",4)){PrintBone2(recString);flagTripOver=fTrue; state=4;}
 				/********************************************offload trip*****************************************/
 				else if (recString[0]=='o'){
-					whichTripToOffload=atoi((const char *)recString[1]);
+					char *tempString;
+					tempString[0]=recString[1];
+					tempString[1]='\0';
+					whichTripToOffload=atoi(tempString);
 					if (whichTripToOffload>0 && whichTripToOffload<=numberOfGAVRtrips){
 						flagOffloadTrip=fTrue;
 					}else{
 						flagOffloadTrip=fFalse;
 						whichTripToOffload=-1;
 						PrintBone2("No trip with that number.");
+						PrintBone2(tempString);
 					}//end if valid trip.
 					state=4;
 				/********************************************delete USB/GAVR trip*********************************/
 				}else if (recString[0]=='d'){
 					if (recString[1]=='u'){
-						whichUSBtripToDelete=atoi((const char *)recString[2]);
+						char *tempString;
+						tempString[0]=recString[1];
+						tempString[1]='\0';						
+						whichUSBtripToDelete=atoi(tempString);
 						if (flagHaveUSBTrips && whichUSBtripToDelete <=USBtripsViewer.size()){
 							flagDeleteUSBTrip=fTrue;
 							PrintBone2(recString);
@@ -707,21 +714,22 @@ void SendBone(BYTE whichTrip){
 			}//end case 2
 			case 3:{
 				if (!strncmp(recString,"A.",2)){state=4;}					//Got initial ack, go send data back and forth
-				else if (!strcmp(recString,checkString)){state=4;}			//Bone received what it was supposed to.
-				else if (!strcmp(recString,"T.")){state=4;}
+				else if (!strncmp(recString,prefaceChar[sendingWhat-1],2)){state=4;}			//Bone received what it was supposed to.
+				else if (recString[0]=='T'){state=4;}
 				else {state=5;}												//ERROR IN ACK case
 				break;
 			}//end case 3
 			case 4:{
+				PrintBone2("Sending trip data.");
 				//Go through what we are sending. 
 				if (sendingWhat < 9){
-					strcpy(checkString,prefaceChar[sendingWhat]);
+					PrintBone2(prefaceChar[sendingWhat]);
 					PrintBone(prefaceChar[sendingWhat]);
 					switch (sendingWhat){
 						case 0:{utoa(whichTrip,sendString,10);break;}											//Sends T.
-						case 1:{dtostrf(aveSpeed,5,2,sendString);break;}
-						case 2:{dtostrf(aveHR,5,2,sendString);break;}
-						case 3:{dtostrf(distance,6,2,sendString);break;}		//Distance in miles.
+						case 1:{dtostrf(aveSpeed,0,2,sendString);break;}
+						case 2:{dtostrf(aveHR,0,2,sendString);break;}
+						case 3:{dtostrf(distance,0,2,sendString);break;}		//Distance in miles.
 						case 4:{utoa(startDays,sendString,10);break;}
 						case 5:{utoa(startYear,sendString,10);break;}
 						case 6:{utoa(minutesElapsed,sendString,10);break;}
@@ -731,13 +739,14 @@ void SendBone(BYTE whichTrip){
 					}
 					PrintBone(sendString);
 					PutUartChBone('.');					
+					PrintBone2(sendString);
 					sendingWhat++;
 					state=1;													//Go back to receive state.
 					for (int i=0; i<strLoc; i++){recString[i]=NULL;}
 					strLoc=0; 
 					noCarriage=fTrue;
 				}//end if sendingWhat < 9
-				else {state=5;flagOffloadTrip=fFalse;PrintBone("D.");}												//Send D for done.The correct thing what sent, ok to exit
+				else {state=5;sendingWhat=0;flagOffloadTrip=fFalse;PrintBone2("Done sending.");PrintBone("D.");}												//Send D for done.The correct thing what sent, ok to exit
 				break;
 			}//end case 4				
 			case 5:{
