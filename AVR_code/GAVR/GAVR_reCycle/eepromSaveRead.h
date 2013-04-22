@@ -111,10 +111,14 @@ void MoveTripDown(BYTE whichTrip){
 void DeleteTrip(BYTE whichTrip){
 	//Need to shift all trips down by one to that location.
 	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);
+	if (numberOfTrips!=numberOfGAVRtrips){
+		numberOfGAVRtrips=numberOfTrips;
+	}
 	for (int i=whichTrip+1; i<=numberOfTrips; i++){
 		MoveTripDown(i);
 	}
 	numberOfTrips--;
+	numberOfGAVRtrips--;
 	eeprom_write_byte(&eeNumberOfTrips,numberOfTrips);		//store number of trips back now.
 }
 /*************************************************************************************************************/
@@ -122,23 +126,31 @@ void EndTripEEPROM(){
 	BYTE numberOfTrips=eeprom_read_byte(&eeNumberOfTrips);								//If there is one trip, then the offset should be 1 to get to where new data is stored,\
 																						offset is new value of numberOfTrips since the location we are writing two is one above what it should be.
 	numberOfTrips++;
-	WORD offset=INITIAL_OFFSET+((numberOfTrips-1)*BLOCK_SIZE);	
+	WORD offset=INITIAL_OFFSET+((numberOfTrips-2)*BLOCK_SIZE);	
 	eeprom_update_byte(&eeNumberOfTrips,numberOfTrips);									//Put the new amount of trips in the correct location
 	eeprom_update_byte(&eeTripFinished,FINISHED);										//say that the trip is done with a 1(True)
 	//Now get the necessary data and store in EEPROM.
 	eeprom_update_float((float*)(offset+AVESPEED),(float)globalTrip.getAverageSpeed());
 	eeprom_update_float((float*)(offset+AVEHR),(float)globalTrip.getAveHR());
 	eeprom_update_float((float*)(offset+DISTANCE),(float)globalTrip.getDistance());
-	eeprom_update_word((WORD *)(offset+START_DAYS),globalTrip.getStartDays());
-	eeprom_update_word((WORD *)(offset+START_YEAR),globalTrip.getStartYear());
-	eeprom_update_word((WORD *)(offset+MINUTES_ELAPSED),globalTrip.getMinutesElapsed());
-	eeprom_update_word((WORD *)(offset+DAYS_ELAPSED),globalTrip.getDaysElapsed());
-	eeprom_update_word((WORD *)(offset+YEARS_ELAPSED),globalTrip.getYearsElapsed());
-	eeprom_update_word((WORD *)(offset+SPEED_READINGS_L),globalTrip.getSpeedPointsLow());
-	eeprom_update_word((WORD *)(offset+SPEED_READINGS_H),globalTrip.getSpeedPointsHigh());
-	eeprom_update_word((WORD *)(offset+HR_READINGS_L),globalTrip.getHRReadingsLow());
-	eeprom_update_word((WORD *)(offset+HR_READINGS_H),globalTrip.getHRReadingsHigh());
+	eeprom_update_word((WORD *)(offset+START_DAYS),(WORD)globalTrip.getStartDays());
+	eeprom_update_word((WORD *)(offset+START_YEAR),(WORD)globalTrip.getStartYear());
+	eeprom_update_word((WORD *)(offset+MINUTES_ELAPSED),(WORD)globalTrip.getMinutesElapsed());
+	eeprom_update_word((WORD *)(offset+DAYS_ELAPSED),(WORD)globalTrip.getDaysElapsed());
+	eeprom_update_word((WORD *)(offset+YEARS_ELAPSED),(WORD)globalTrip.getYearsElapsed());
+	eeprom_update_word((WORD *)(offset+SPEED_READINGS_L),(WORD)globalTrip.getSpeedPointsLow());
+	eeprom_update_word((WORD *)(offset+SPEED_READINGS_H),(WORD)globalTrip.getSpeedPointsHigh());
+	eeprom_update_word((WORD *)(offset+HR_READINGS_L),(WORD)globalTrip.getHRReadingsLow());
+	eeprom_update_word((WORD *)(offset+HR_READINGS_H),(WORD)globalTrip.getHRReadingsHigh());
 	eeprom_update_float((float*)(offset+WHEEL_SIZE),(float)globalTrip.getWheelSize());
+	#ifdef TESTING
+		char tempString[5],tempString2[5],tempString3[5];
+		WORD tempNum=eeprom_read_word((WORD*)(offset+START_DAYS));
+		utoa(tempNum,tempString,10);
+		PrintBone2("Saved ");
+		PrintBone2(tempString);
+		PrintBone2("days...");
+	#endif
 }
 /*************************************************************************************************************/
 void StartNewTripEEPROM(){

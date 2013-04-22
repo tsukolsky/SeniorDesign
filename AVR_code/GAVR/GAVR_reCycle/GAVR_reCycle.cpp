@@ -93,7 +93,7 @@
 |		DBG2=SendWAVR
 |		DBG3=ReceiveBone2
 |		DBG4=InterruptFromWAVR
-|		DBG5=<>
+|		DBG5=SendBone
 |		DBG6=<>
 |		DBG7=flagUSBinserted
 |		DBG8=ReceiveBone
@@ -102,6 +102,8 @@
 \*******************************************************************************/
 
 using namespace std;
+//Whether or not this will ask to communicate with WAVR after a startup timeout. Comment out if you want to enable the timeout
+#define TESTING
 
 #include <inttypes.h>
 #include <math.h>
@@ -119,8 +121,7 @@ using namespace std;
 #include "myVector.h"
 #include "gavrUart.h"
 
-//Whether or not this will ask to communicate with WAVR after a startup timeout. Comment out if you want to enable the timeout
-#define TESTING
+
 
 /*****************************************/
 /**			UART Frequency/BAUD			**/
@@ -147,7 +148,7 @@ using namespace std;
 /**			Speed and HR Defs			**/
 /*****************************************/
 #define TIMER1_OFFSET		65535
-#define BAD_SPEED_THRESH	4
+#define BAD_SPEED_THRESH	3
 #define CALC_SPEED_THRESH	3				//at 20MPH, 4 interrupts take 1 second w/clk, should be at least every second
 #define MINIMUM_HR_THRESH	350				//
 #define MAXIMUM_HR_THRESH	800				//seen in testing it usually doesn't go more than 100 above or below 512 ~ 1.67V
@@ -221,6 +222,8 @@ BOOL flagHaveUSBTrips, flagOffloadTrip, flagNeedTrips, flagViewUSBTrips, flagVie
 myTime currentTime;					//The clock, must be global. Initiated as nothing.
 trip globalTrip;					//Trip must be global as well, initialed in normal way. Startup procedure sets it. 
 myVector<char *> USBtripsViewer;	//Vector to hold trip data sent over by the USB
+//char *actualTrips[20];
+//BYTE numberOfUSBTrips=0;
 WORD HRSAMPLES[300];				//Array of HR Samples passed to the hrMonitor.h class.
 WORD numberOfSpeedOverflows=0;		//How many times the counter has overflowed for the reed switch. 
 BOOL flagNoSpeed=fFalse;			//Whether or not there is a default of NO speed right now.
@@ -257,6 +260,9 @@ ISR(USART1_RX_vect){
 }
 /************************************************************************/
 ISR(USART2_RX_vect){
+	/*char recChar;
+	recChar=UDR2;
+	PutUartChBone2(recChar);*/
 	cli();
 	if (flagWaitingForBone2){
 		flagWaitingForBone2=fFalse;
@@ -266,7 +272,6 @@ ISR(USART2_RX_vect){
 	}	
 	UCSR2B &= ~(1 << RXCIE2);
 	sei();
-
 }	
 /************************************************************************/
 //INT0, getting something from the watchdog
@@ -307,18 +312,16 @@ ISR(INT6_vect){
 	//Do something with speed/odometer/trip thing.
 	cli();
 	WORD value=TCNT1;
-	if (value > 2){
+	if (flagNoSpeed){
+		flagNoSpeed=fFalse;
+		globalTrip.resetSpeedPoints();
+	}//end if no speed.
+	if (((value > 3000 && numberOfSpeedOverflows==0)|| numberOfSpeedOverflows>0) && !flagNoSpeed){
 		prtDEBUGled |= (1 << bnDBG1);
-		if (flagNoSpeed){
-			flagNoSpeed=fFalse;
-			globalTrip.resetSpeedPoints();
-		} else {
-			globalTrip.addSpeedDataPoint(value+numberOfSpeedOverflows*TIMER1_OFFSET);
-		}
+		globalTrip.addSpeedDataPoint(value+numberOfSpeedOverflows*TIMER1_OFFSET);
 		numberOfSpeedOverflows=0;	
-		Wait_ms(50);
 		prtDEBUGled &= ~(1 << bnDBG1);
-	}	
+	} else;		//was a repeat/low value, not valid. Go forward.
 	TCNT1=0x00;
 	sei();
 }
@@ -334,20 +337,19 @@ ISR(INT7_vect){
 ISR(TIMER0_COMPA_vect){
 	cli(); 
 	static BOOL flagGettingHR=fFalse;
+	static WORD location=0;
 	//Take a reading every 10 seconds.
 	if (currentTime.getSeconds()%10==0 && !flagGettingHR){
 		flagGettingHR=fTrue;
 	} 
 	if (flagGettingHR){
 		//Declare variables
-		volatile WORD signal=0;
-		volatile static unsigned int location=0;
-	
+		WORD signal=0;
 		//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
 		signal = GetADC();		//retrieves ADC reading on ADC0
 		HRSAMPLES[location++]=signal;
-		if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300);}
-	}
+		if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300); flagGettingHR=fFalse;}
+	}//end if getting HR.
 	//Re-enable interrupts
 	sei();
 }
@@ -371,6 +373,7 @@ ISR(TIMER2_OVF_vect){
 	if (currentTime.getSeconds()%10==0){flagShowStats=fTrue;}
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
+	globalTrip.addTripSecond();
 	//Timeout functionality
 			
 	//UART0/Bone Trips Send timeout
@@ -451,6 +454,7 @@ int main(void)
 		//Receiving from the Bone. Bone has priority over WAVR
 		if (flagReceiveBone && !flagQUIT){
 			prtDEBUGled2 |= (1 << bnDBG8);		//third from bottom.
+			PrintBone2("Receiving from bone.");
 			ReceiveBone();
 			Wait_sec(2);
 			if (!flagReceiveWAVR && !flagWaitingForWAVR && !flagReceiveBone2 && !flagWaitingForBone2){
@@ -463,8 +467,8 @@ int main(void)
 		if (flagReceiveBone2 && !flagQUIT && !flagReceiveBone && !flagReceiveWAVR){
 			prtDEBUGled |= (1 << bnDBG3);
 			ReceiveBone2();
-			Wait_sec(2);
-			if (!flagReceiveWAVR && flagWaitingForWAVR){
+			Wait_sec(10);
+			if (!flagReceiveWAVR && !flagWaitingForWAVR){
 				__enableCommINT();
 			}
 			prtDEBUGled &= ~(1 << bnDBG3);
@@ -498,8 +502,8 @@ int main(void)
 		
 /**************testing procedure start********************/					
 #ifdef TESTING		
-		/* Debugging/PRE-LCD functionality. Prints every 5 seconds */
-		if (flagShowStats && !flagWaitingForBone && !flagWaitingForWAVR && !flagReceiveBone && !flagReceiveWAVR && !flagQUIT){
+		/* Debugging/PRE-LCD functionality. Prints every 10 seconds */
+		if (flagShowStats && !flagWaitingForBone && !flagWaitingForWAVR && !flagReceiveBone && !flagReceiveWAVR && !flagReceiveBone2 && !flagWaitingForBone2 && !flagQUIT){
 			cli();
 			flagShowStats=fFalse;
 			//Put together a time string.
@@ -514,17 +518,48 @@ int main(void)
 			double distance=globalTrip.getDistance();
 			double currentHR=globalTrip.getCurrentHR();
 			double averageHR=globalTrip.getAveHR();
-			char speedString[8],aveSpeedString[8],distanceString[8],currentHRstring[8],aveHRstring[8];
+			WORD sdays=globalTrip.getStartDays();
+			WORD syear=globalTrip.getStartYear();
+			WORD minElapsed= globalTrip.getMinutesElapsed();
+			WORD dayElapsed=globalTrip.getDaysElapsed();
+			WORD yearElapsed=globalTrip.getYearsElapsed();
+			char speedString[8],aveSpeedString[8],distanceString[8],currentHRstring[8],aveHRstring[8], startString[9],yearString[5], timeLapseString[10];
 			//Turn doubles and ints into strings.
 			dtostrf(speed,5,3,speedString);
 			dtostrf(aveSpeed,5,3,aveSpeedString);
 			dtostrf(distance,7,4,distanceString);
 			dtostrf(currentHR,4,2,currentHRstring);
 			dtostrf(averageHR,4,2,aveHRstring);
+			//make start string
+			utoa(sdays,startString,10);
+			utoa(syear,yearString,10);
+			strcat(startString,"/");
+			strcat(startString,yearString);
+			//make timeLapseString
+			utoa(minElapsed,timeLapseString,10);
+			char dayStr[4],yearStr[5];
+			utoa(dayElapsed,dayStr,10);
+			utoa(yearElapsed,yearStr,10);
+			strcat(timeLapseString,":");
+			strcat(timeLapseString,dayStr);
+			strcat(timeLapseString,":");
+			strcat(timeLapseString,yearStr);
+			char howManyString[4];
+			utoa(numberOfGAVRtrips,howManyString,10);
+			char viewSize[4];
+			utoa(USBtripsViewer.size(),viewSize,10);
 			//Print them to Bone2 port (BONE RX5)
 			PrintBone2("***");
-			PrintBone2("Time/Date:");
+			PrintBone2("Trip viewer size=");
+			PrintBone2(viewSize);
+			PrintBone2("---Number of GAVR Trips:");
+			PrintBone2(howManyString);
+			PrintBone2("---Time/Date:");
 			PrintBone2(timeString);
+			PrintBone2("--Start Days/Year");
+			PrintBone2(startString);
+			PrintBone2("--Time lapsed:");
+			PrintBone2(timeLapseString);
 			PrintBone2("--Sp:");
 			PrintBone2(speedString);
 			PrintBone2("--AvSp:");
@@ -548,32 +583,52 @@ int main(void)
 				globalTrip.setWheelSize(tempWheelSize);
 			}				
 			
-			//If User ends a trip, start a new one while saving everything in EEPROM
+			//If User ends a trip, start a new one while saving everything in EEPROM...Testing, good I think.
 			if (flagTripOver){						//If the trip is over, end this one then start a new one.
-				EndTripEEPROM();
-				StartNewTripEEPROM();
+				static BOOL continueWithNew=fTrue;
+				PrintBone2("In flagTripOver.");
+				if (continueWithNew){
+					EndTripEEPROM();
+					StartNewTripEEPROM();
+				}
+				prtDEBUGled |= (1 << bnDBG5);
 				SendBone(0);						//Tell the bone a new trip was started.
+				prtDEBUGled &= ~(1 << bnDBG5);
 				//Flag is reset in SendBone section.
+				if (flagTripOver){
+					continueWithNew=fFalse;
+				} else {
+					continueWithNew=fTrue;
+				}
 			}		
 				
 			//If we need to delete a trip from the GAVR, delete it and then tell bone to delete that GPS file.
 			if (flagDeleteGAVRTrip){
+				PrintBone2("Deleting GAVR trip.");
+				BYTE trips=eeprom_read_byte(&eeNumberOfTrips);		//see how many trips there are
+				if (numberOfGAVRtrips!=trips){
+					numberOfGAVRtrips=trips;
+				}
 				static BOOL continueWithDelete=fTrue;
-				int currentTripNumber=10;
 				//Make it so we can't delete the current trip.
-				if (whichGAVRtripToDelete==currentTripNumber){
+				if (whichGAVRtripToDelete==numberOfGAVRtrips){
 					flagDeleteGAVRTrip=fFalse;
 					continueWithDelete=fFalse;
 				}
 				//delete the trip
 				if (continueWithDelete){
+					PrintBone2("Deleting EEPROM...");
 					DeleteTrip(whichGAVRtripToDelete);
 				}
+				prtDEBUGled |= (1 << bnDBG5);
 				SendBone(whichGAVRtripToDelete);					//Will leave flag high if there was an error. If there was, don't do anything
+				prtDEBUGled &= ~(1 << bnDBG5);
 				if (flagDeleteGAVRTrip){
+					PrintBone2("Unsuccessful delete on Bone.");
 					//Flag is still high, don't delete on next round
 					continueWithDelete=fFalse;
 				} else {
+					PrintBone2("Successful delete on Bone.");
 					//successfully deleted GPS data from the BeagleBone. Next time this is called it will be for a new trip. Good to go.
 					continueWithDelete=fTrue;
 					whichGAVRtripToDelete=-1;
@@ -583,52 +638,67 @@ int main(void)
 			
 			//If user wants to see the trips on the GAVR, show them.
 			if (flagViewGAVRtrips){
-				//Declare variables for capture in HEAP memory. Start Day, Start Year, strings.
-				WORD tripDays,tripMonth=1,tripYear=2013;
-				myVector<char *> tripIDs;
-				unsigned int offset;
-				for (int i=0; i<numberOfGAVRtrips;i++){
-					tripMonth=1;
-					offset=i*BLOCK_SIZE+INITIAL_OFFSET;
-					tripDays=eeprom_read_word((WORD *)(offset+START_DAYS));
-					tripYear=eeprom_read_word((WORD *)(offset+START_YEAR));
-					//Get what month it is, also days.
-					while (tripDays>daysInMonth[tripMonth-1]){
-						tripDays-=daysInMonth[tripMonth-1];
-						tripMonth++;
-					}
-					if (tripDays>28 && tripMonth==2){
-						tripDays-=daysInMonth[tripMonth-1];
-						tripMonth++;
-					}
-					//Assemble the strings. Define array of stack strings
-					char *tempString[4];
-					utoa(tripMonth,tempString[0],10);
-					utoa(tripDays,tempString[1],10);
-					utoa(tripYear,tempString[2],10);
-					//Put together the tempString
-					strcpy(tempString[3],"Trip ");
-					strcat(tempString[3],tempString[0]);
-					strcat(tempString[3],"/");
-					strcat(tempString[3],tempString[1]);
-					strcat(tempString[3],"/");
-					strcat(tempString[3],tempString[2]);
-					//String complete, push onto the vector
-					tripIDs.push_back(tempString[3]);
+				PrintBone2("In viewGAVR trips.");
+				BYTE trips=eeprom_read_byte(&eeNumberOfTrips);		//see how many trips there are
+				if (numberOfGAVRtrips!=trips){
+					numberOfGAVRtrips=trips;
 				}
-				//Print Those trips
-				for (int j=0;j<tripIDs.size();j++){
-					PrintBone2(tripIDs[j]);
-				}
+				if (numberOfGAVRtrips>1){
+					char tempNum[5];
+					utoa(numberOfGAVRtrips,tempNum,10);
+					PrintBone2(tempNum);
+					PutUartChBone2('-');
+					//Declare variables for capture in HEAP memory. Start Day, Start Year, strings.
+					WORD tripDays,tripMonth=1,tripYear=2013;
+					myVector<char *> tripIDs;
+					unsigned int offset;
+					for (int i=0; i<numberOfGAVRtrips-1;i++){
+						tripMonth=1;
+						offset=i*BLOCK_SIZE+INITIAL_OFFSET;
+						tripDays=eeprom_read_word((WORD *)(offset+START_DAYS));
+						tripYear=eeprom_read_word((WORD *)(offset+START_YEAR));
+						//Get what month it is, also days.
+						while (tripDays>daysInMonth[tripMonth-1]){
+							tripDays-=daysInMonth[tripMonth-1];
+							tripMonth++;
+						}
+						if (tripDays>28 && tripMonth==2){
+							tripDays-=daysInMonth[tripMonth-1];
+							tripMonth++;
+						}
+						//Assemble the strings. Define array of stack strings
+						char tempString[5],tempString1[5],tempString2[5],tempString3[40];
+						utoa(tripMonth,tempString,10);
+						utoa(tripDays,tempString1,10);
+						utoa(tripYear,tempString2,10);
+
+						//Put together the tempString
+						strcpy(tempString3,"Trip ");
+						strcat(tempString3,tempString);
+						strcat(tempString3,"/");
+						strcat(tempString3,tempString1);
+						strcat(tempString3,"/");
+						strcat(tempString3,tempString2);
+						//String complete, push onto the vector
+						tripIDs.push_back(tempString3);
+					}
+					//Print Those trips
+					for (int j=0;j<tripIDs.size();j++){
+						PrintBone2(tripIDs[j]);
+					}			
+				} else {PrintBone2("Only one trip.");}
 				flagViewGAVRtrips=fFalse;
-			}//end flagViewGAVRtrips			
-			
-			
+			}//end flagViewGAVRtrips									
 			//If there is a USB and user asks to delete trips, offload a trip, or view trips on the USB, tell the Bone.
 			if (flagUSBinserted){
 				//We want to view the trips, get them and push them onto a template stack.? or vector push?->Only looking at start date in first implementation(use char vector).
 				if (flagNeedTrips){
+					flagHaveUSBTrips=fFalse;
+					prtDEBUGled |= (1 << bnDBG5);
+					PrintBone2("Asking for trips.");
 					SendBone(0);
+					prtDEBUGled &= ~(1 << bnDBG5);
+					if (flagNeedTrips){PrintBone2("Unsuccessful ask for trips.");}
 				}
 				//Get which trip the user wants to offload and send it to the Bone
 				if (flagOffloadTrip && !flagDeleteUSBTrip){
@@ -664,67 +734,98 @@ int main(void)
 				
 				//If user wants to see the trips on the Bone, show them if we have them
 				if (flagViewUSBTrips && !flagNeedTrips && flagHaveUSBTrips){
+					PrintBone2("Viewing trips.");
 					BOOL flagPrint=fTrue;
-					int numberOfTrips=USBtripsViewer.size();
-					myVector<char *> usbtripIDs;
+					int numberOfUSBTrips=USBtripsViewer.size();
+					if (numberOfUSBTrips>0){
+						myVector<char *> usbtripIDs;
+						char *tempStrings0;
+						char tempStrings1[4], tempStrings2[3],tempStrings3[5], tempStrings4[40];
+						//[0]=popped from viewer, [1]=days,[2]=months,[3]=years,[4]=assembled string.
+						//Parse the string and make a nicer string.
+						for (int i=0; i<numberOfUSBTrips;i++){
+							strcpy(tempStrings0,USBtripsViewer[i]);
+							PrintBone2(USBtripsViewer[i]);
+							//strcpy(tempStrings0,actualTrips[numberOfUSBTrips]);
+							PrintBone2("String:");
+							PrintBone2(tempStrings0);
+							//Need to find what the days were. Locatoin=location in tempStrings[0], dayPlacement=tempStings[1], yearPlacement=tempStrings[3], tDays and months used for getting right value.
+							int location=1, dayPlacement=0, yearPlacement=0, tripDays=1,tripMonth=1;
+							
+							//Get the number of days otu of the string
+							while (tempStrings0[location] != '/' && tempStrings0[location] != '.' && tempStrings0[location] != '\0'){
+								tempStrings1[dayPlacement++]=tempStrings0[location++];
+							}//broke
+							if (tempStrings0[location]=='/'){
+								int yearPlacement=0;
+								location++;
+								while (tempStrings0[location] != '.' && tempStrings0[location] != '\0'){
+									tempStrings3[yearPlacement++]=tempStrings0[location++];
+								}//end while moving year	
+							}//end if we found '/'
+						/*	PrintBone2("Days:");
+							PrintBone2(tempStrings1);
+							PrintBone2("Year:");
+							PrintBone2(tempStrings3);*/
+							//Turn dayString into a number of days.
+							if (dayPlacement>0 && yearPlacement>0){
+								tripDays=atoi(tempStrings1);
+								tripMonth=1;
+								//Get what month it is, also days.
+								while (tripDays>daysInMonth[tripMonth-1]){
+									tripDays-=daysInMonth[tripMonth-1];
+									tripMonth++;
+								}
+								if (tripDays>28 && tripMonth==2){
+									tripDays-=daysInMonth[tripMonth-1];
+									tripMonth++;
+								}//end finding of days and month
+								utoa(tripDays,tempStrings1,10);
+								utoa(tripMonth,tempStrings2,10);
+							/*	PrintBone2("NewDays:");
+								PrintBone2(tempStrings1);
+								PrintBone2("Month:");
+								PrintBone2(tempStrings2);*/
+								//Merge all strings into a start date in tempStrings[4]
+								strcpy(tempStrings4,tempStrings2);
+								strcat(tempStrings4,"/");
+								strcat(tempStrings4,tempStrings1);
+								strcat(tempStrings4,"/");
+								strcat(tempStrings4,tempStrings3);
+								//Push onto usbtripIds
+								usbtripIDs.push_back(tempStrings4);	
+							}//end if day and year placement>0
+							else {flagPrint=fFalse;}
+						}//end for i<numberOfTrips
 					
-					//Parse the string and make a nicer string.
-					for (int i=0; i<numberOfTrips;i++){
-						char *tempStrings[5];					//[0]=popped from viewer, [1]=days,[2]=months,[3]=years,[4]=assembled string.
-						tempStrings[0]=USBtripsViewer[i];
-						
-						//Need to find what the days were. Locatoin=location in tempStrings[0], dayPlacement=tempStings[1], yearPlacement=tempStrings[3], tDays and months used for getting right value.
-						int location=1, dayPlacement=0, yearPlacement=0, tripDays=1,tripMonth=1;
-						
-						//Get the number of days otu of the string
-						while (tempStrings[0][location] != '/' && tempStrings[0][location] != '.' && tempStrings[0][location] != '\0'){
-							tempStrings[1][dayPlacement++]=tempStrings[0][location++];
-						}//broke
-						if (tempStrings[0][location]=='/'){
-							int yearPlacement=0;
-							location++;
-							while (tempStrings[0][location] != '.' && tempStrings[0][location] != '\0'){
-								tempStrings[3][yearPlacement++]=tempStrings[0][location++];
-							}//end while moving year	
-						}//end if we found '/'
-						
-						//Turn dayString into a number of days.
-						if (dayPlacement>0 && yearPlacement>0){
-							tripDays=atoi(tempStrings[1]);
-							tripMonth=1;
-							//Get what month it is, also days.
-							while (tripDays>daysInMonth[tripMonth-1]){
-								tripDays-=daysInMonth[tripMonth-1];
-								tripMonth++;
-							}
-							if (tripDays>28 && tripMonth==2){
-								tripDays-=daysInMonth[tripMonth-1];
-								tripMonth++;
-							}//end finding of days and month
-							utoa(tripDays,tempStrings[1],10);
-							utoa(tripMonth,tempStrings[2],10);
-							//Merge all strings into a start date in tempStrings[4]
-							strcpy(tempStrings[4],tempStrings[2]);
-							strcat(tempStrings[4],"/");
-							strcat(tempStrings[4],tempStrings[1]);
-							strcat(tempStrings[4],"/");
-							strcat(tempStrings[4],tempStrings[3]);
-							//Push onto usbtripIds
-							usbtripIDs.push_back(tempStrings[4]);	
-						}//end if day and year placement>0
-						else {flagPrint=fFalse;}
-					}//end for i<numberOfTrips
-					
-					if (flagPrint){
-						PrintBone2("USB Trips: ");
-						for (int i=0; i<usbtripIDs.size(); i++){
-							PrintBone2(usbtripIDs[i]);
-							PrintBone2("...");
-						}//end for
-					} else {
-						PrintBone2("Error with trip strings.");
-					}//end if flagPrint
-					flagViewUSBTrips=fFalse;
+						if (flagPrint){
+							PrintBone2("USB Trips: ");
+							for (int i=0; i<usbtripIDs.size(); i++){
+								PrintBone2(usbtripIDs[i]);
+								PrintBone2("...");
+								flagViewUSBTrips=fFalse;
+							}//end for
+						} else {
+							PrintBone2("Error with trip strings, resetting have bools.");
+							flagHaveUSBTrips=fFalse;
+							flagNeedTrips=fTrue;
+							for (int i=0; i<USBtripsViewer.size(); i++){
+									char *tempString=USBtripsViewer.pop_back();
+									PrintBone2("Popped ");
+									PrintBone2(tempString);
+							}		
+						}//end if flagPrint
+					}else {
+						PrintBone2("Don't have trips, resetting bools."); 
+						flagHaveUSBTrips=fFalse;
+						flagNeedTrips=fTrue;
+						for (int i=0; i<USBtripsViewer.size(); i++){
+							char *tempString=USBtripsViewer.pop_back();
+							PrintBone2("Popped ");
+							PrintBone2(tempString);
+						}		//end for
+						flagViewUSBTrips=fTrue;
+					}	//end if (USBtripsViewer.size()>0)-else
 				}//end flagViewUSBTrips
 			}//end if USBinserted
 		}//end LCD input	
@@ -857,7 +958,7 @@ void AppInit(unsigned int ubrr){
 	flagSendBone=fFalse;
 	//flagNewTripStartup=fFalse;
 
-	flagLCDinput=fFalse;
+	flagLCDinput=fTrue;
 	flagUSBinserted=fFalse;
 	flagUpdateWheelSize=fFalse;
 	flagTripOver=fFalse;
@@ -870,6 +971,7 @@ void AppInit(unsigned int ubrr){
 	flagViewUSBTrips=fFalse;
 	flagViewGAVRtrips=fFalse;
 
+	flagShowStats=fFalse;
 	//Enable Communication interrupts now.
 	__enableCommINT();
 

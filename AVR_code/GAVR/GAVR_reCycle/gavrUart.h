@@ -60,7 +60,9 @@ extern BOOL flagOffloadTrip, flagNeedTrips, flagDeleteUSBTrip, flagDeleteGAVRTri
 extern myTime currentTime;
 extern trip globalTrip;
 extern myVector<char *> USBtripsViewer;
+//extern char *actualTrips[20];
 extern int whichTripToOffload, whichUSBtripToDelete,whichGAVRtripToDelete;
+//extern BYTE numberOfUSBTrips;
 
 //Forward Declaration
 void printTimeDate(BOOL WAVRorBone, BOOL pTime, BOOL pDate);
@@ -431,37 +433,36 @@ void ReceiveBone2(){
 				recChar = UDR2;
 				if (recChar=='.'){
 					state=3;
-				} else  {recString[strLoc++]=recChar; state=1;}
+				} else {recString[strLoc++]=recChar; state=1;}
 				break;
 			}//end case 0
 			case 1:{
-				PrintBone2("state1.");
 				while (noCarriage && flagReceiveBone2){	//while there isn't a timeout and no carry
 					while ((!(UCSR2A & (1 << RXC2))) && flagReceiveBone2);		//get the next character
-						if (!flagReceiveBone){break;}					//if there was a timeout, break out and reset state
-						recChar=UDR2;
-						recString[strLoc++]=recChar;
-						if (recChar == '.' || recChar=='\0'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
-						else if (strLoc >= 39){state=3;noCarriage=fFalse;}
-						else; //end if-elseif-else
+					if (!flagReceiveBone2){break;}					//if there was a timeout, break out and reset state
+					recChar=UDR2;
+					recString[strLoc++]=recChar;
+					if (recChar == '.' || recChar=='\0'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}
+					else if (strLoc >= 39){state=3;noCarriage=fFalse;}
+					else; //end if-elseif-else
 				}//end while
 				break;
 				}//end case 1
 			case 2:{
-				PrintBone2("state2");
 				if (!strncmp(recString,"b.",2)){printTimeDate(fTrue,fTrue,fTrue);state=4;}
 				else if (!strncmp(recString,"hi.",3)){PrintBone2("Hello BeagleBone.");state=4;}
-				else if (!strncmp(recString,"s.",2)){saveDateTime_eeprom(fTrue,fFalse);PrintBone(recString);state=4;}
-				else if (!strncmp(recString,"vg.",3)){flagViewGAVRtrips=fTrue;state=4;}
+				else if (!strncmp(recString,"s.",2)){saveDateTime_eeprom(fTrue,fFalse);PrintBone2(recString);state=4;}
+				else if (!strncmp(recString,"vg.",3)){PrintBone2(recString);flagViewGAVRtrips=fTrue;state=4;}
 				else if (!strncmp(recString,"vu.",3)){
 					if (flagHaveUSBTrips){
+						PrintBone2(recString);
 						flagViewUSBTrips=fTrue;
 					} else {
-						flagViewUSBTrips=fFalse;
-						PrintBone2("NO USB TRIPS.");
+						flagNeedTrips=fTrue;
+						PrintBone2("NO USB TRIPS, getting them...");
 					}
 					state=4;
-				} else if (!strncmp(recString,"new.",4)){flagTripOver=fTrue; state=4;}
+				} else if (!strncmp(recString,"new.",4)){PrintBone2(recString);flagTripOver=fTrue; state=4;}
 				/********************************************offload trip*****************************************/
 				else if (recString[0]=='o'){
 					whichTripToOffload=atoi((const char *)recString[1]);
@@ -479,26 +480,32 @@ void ReceiveBone2(){
 						whichUSBtripToDelete=atoi((const char *)recString[2]);
 						if (flagHaveUSBTrips && whichUSBtripToDelete <=USBtripsViewer.size()){
 							flagDeleteUSBTrip=fTrue;
+							PrintBone2(recString);
 						} else {
 							flagDeleteUSBTrip=fFalse;
 							whichUSBtripToDelete=-1;
 							PrintBone2("Invalid USB trip.");
 						}//end if-else valid number
 					} else if (recString[1]=='g'){
-						whichGAVRtripToDelete=atoi((const char *)recString[2]);
-						if (whichGAVRtripToDelete>0 && whichGAVRtripToDelete<=numberOfGAVRtrips){
+						char *tempString;
+						tempString[0]=recString[2];
+						tempString[1]='\0';
+						whichGAVRtripToDelete=atoi(tempString);
+						if (whichGAVRtripToDelete>0 && whichGAVRtripToDelete<numberOfGAVRtrips){
 							flagDeleteGAVRTrip=fTrue;
+							PrintBone2(recString);
 						} else {
 							flagDeleteGAVRTrip=fFalse;
 							whichGAVRtripToDelete=-1;
 							PrintBone2("Invalid GAVR trip.");
+							PutUartChBone2(recString[2]);
 						}//end if valid gavr trip
 					}
 					else;//end if-elseif-else
 					state=4;
 				}				
 				//else if (!strncmp(recString,""))		
-				else {state=3;}						
+				else {PrintBone2(recString);state=3;}						
 				break;
 				}//end case 2
 			case 3:{
@@ -546,7 +553,7 @@ void ReceiveBone(){
 				strLoc=0;
 				recChar = UDR0;
 				if (recChar=='.'){
-					state=6;
+					state=5;
 				} else  {recString[strLoc++]=recChar; state=1;}
 				break;
 			}//end case 0
@@ -564,14 +571,20 @@ void ReceiveBone(){
 				}//end case 1
 			case 2:{
 				if (recString[0]=='T'){state=3;}					//getting a trip, store the data.
-				else if (!strncmp(recString,"D.",2)){flagHaveUSBTrips=fTrue;state=4;}					//exit
+				else if (!strncmp(recString,"D.",2)){PrintBone2("Got all trips.");flagHaveUSBTrips=fTrue;state=4;}					//exit
+				else if (!strncmp(recString,"E.",2)){flagHaveUSBTrips=fFalse;state=4;}
 				else {state=5;}									//Error case
 				break;
 				}//end case 2
 			case 3:{
+				PrintBone2("Getting trips...");
 				//Store trip data in something. Need to add error check on whether we already loaded the trip data.
-				if (!flagHaveUSBTrips){
-					USBtripsViewer.push_back(recString);						//push the current string on the vector
+				if (!flagHaveUSBTrips ){
+					PrintBone2("Got ");
+					PrintBone2(recString);/*
+					char *mallstring=strdup(recString);
+					PrintBone2(mallstring);
+					USBtripsViewer.push_back(mallstring);						//push the current string on the vector*/
 					state=1;
 					PrintBone("A.");
 				} else {state=6;}		//go to state 7 to clear everything out to receive new trips,  error case.
@@ -582,20 +595,25 @@ void ReceiveBone(){
 				}//end case 3
 			case 4:{
 				//Exiting.
-				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
+				for (int i=0; i<40; i++){recString[i]=NULL;}
 				flagReceiveBone=fFalse;
 				break;
 				}//end case 4
 			case 5:{
 				//Error Case
+				PrintBone2("Error.");
+				PrintBone2(recString);
 				PrintBone("E.");
-				state=5;
+				state=4;
 				break;
 				}//end case 5
 			case 6:{
 				//clear out the USBtripsViewer vector
+				PrintBone2("Clearing trips...");
 				for (int i=0; i<USBtripsViewer.size(); i++){
 					char *tempString=USBtripsViewer.pop_back();
+					PrintBone2("Popped ");
+					PrintBone2(tempString);
 				}
 				flagHaveUSBTrips=fFalse;			//say we don't have USBtrips, go back to state 3 to push first one on vector
 				state=3;
@@ -654,20 +672,18 @@ void SendBone(BYTE whichTrip){
 		switch(state){	
 			case 0:{
 				//Raise Interrupts
-				prtWAVRINT |= (1 << bnWAVRINT);
-				for (int i=0; i<2; i++){asm ("nop");}
-				prtWAVRINT &= ~ (1 << bnWAVRINT);
+				prtBONEINT |= (1 << bnBONEINT);
+				for (int i=0; i<5; i++){asm volatile("nop");}
+				prtBONEINT &= ~(1 << bnBONEINT);
 				state=1;
 				break;
 			}//end case 0
 			case 1:{
-				Wait_ms(100);
 				//Put together the string that is being received
 				while (noCarriage && flagSendBone){
-					Wait_ms(50);
-					while (!(UCSR1A & (1 << RXC1)) && flagSendBone);
-					if (!flagSendWAVR){break;}	//there was a timeout, don't do anything else. Flags aren't reset.
-					recChar=UDR1;
+					while ((!(UCSR0A & (1 << RXC0))) && flagSendBone);
+					if (!flagSendBone){break;PrintBone2(recString);}	//there was a timeout, don't do anything else. Flags aren't reset.
+					recChar=UDR0;
 					recString[strLoc++]=recChar;
 					if (recChar=='.'){recString[strLoc]='\0'; noCarriage=fFalse; state=2;}			//(4/7 Revision)Forgot to add noCarriage=fFalse;
 					else if (strLoc >= 39){strLoc=0; noCarriage=fFalse; state=6;}					//Something went wrong putting together the message/ACK
@@ -734,6 +750,7 @@ void SendBone(BYTE whichTrip){
 			}
 			case 6:{
 				//Error
+				PrintBone2(recString);
 				PrintBone("E.");
 				state=5;
 				break;
@@ -762,7 +779,7 @@ void SendBone(BYTE whichTrip){
 			case 10:{
 				char tempChar[5];
 				utoa(whichTrip,tempChar,10);
-				strcpy(sendString,"D");
+				strcpy(sendString,"DU");
 				strcat(tempChar,".");
 				strcat(sendString,tempChar);
 				PrintBone(sendString);											//Should be something like "D4."

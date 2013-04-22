@@ -31,6 +31,8 @@
 #define __calculateSpeedWeight() speedWeight=(speedPoints_L-1)/speedPoints_L 
 
 void PrintBone(char string[]);
+void PutUartChBone2(char ch);
+void PrintBone2(char string[]);
 
 using namespace std;
 
@@ -41,6 +43,7 @@ class odometer{
 		unsigned int getSpeedPointsHigh();
 		unsigned int getStartDays();
 		unsigned int getStartYear();
+		unsigned int getSecondsElapsed();
 		unsigned int getMinutesElapsed();
 		unsigned int getDaysElapsed();
 		unsigned int getYearsElapsed();
@@ -49,6 +52,7 @@ class odometer{
 		double getDistance();
 		double getWheelSize();
 		void addSpeedDataPoint(WORD newDataPoint);
+		void addTripSecond();
 		void resetSpeedPoints();
 		void setStartDate(unsigned int sDays, unsigned int sMonths, unsigned int sYear);
 		void setWheelSize(double wheelSize);
@@ -94,6 +98,7 @@ void odometer::resetOdometer(){
 	speedPoints_H=0;
 	sDays=0;
 	sYear=2013;
+	tripSeconds=0;
 	tripMinutes=0;
 	tripDays=0;
 	tripYears=0;
@@ -150,6 +155,24 @@ void odometer::setOdometer(double swapAveSpeed, double swapDistance,
 	firstRun=fTrue;
 }
 
+void odometer::addTripSecond(){
+	tripSeconds++;
+	if (tripSeconds/60 >=1){
+		WORD howManyMinutes=tripSeconds/60;
+		tripMinutes+=howManyMinutes;
+		//If the number of minutes in the day is a day, add a day. If the number of days is 365, add a year
+		if (tripMinutes/1440 >= 1){
+			tripDays++;
+			if (tripDays/365 >= 1){
+				tripYears++;
+			}
+		}
+	}
+	//Turn int's into correct values
+	tripSeconds%=60;
+	tripMinutes%=1440;
+	tripDays%=365;	
+}
 //New speed data point
 void odometer::addSpeedDataPoint(WORD newDataPoint){
 	//If this is first point or new wheelsize, or whatever, need to initialize all data points. 
@@ -173,19 +196,6 @@ void odometer::addSpeedDataPoint(WORD newDataPoint){
 	speedPoints_L++;
 	//Update distance traveled and time elapsed while riding.
 	distance+=wheelSize;			
-	tripSeconds += TIMER1_CLOCK_sec*newDataPoint;
-	if (tripSeconds/60 >=1){
-		tripMinutes+=tripSeconds/60;
-		if (tripMinutes/1440 >= 1){
-			tripDays++;
-			if (tripDays/365 >= 1){
-				tripYears++;
-			}
-		}
-	}
-	tripSeconds%=60;
-	tripMinutes%=1440;
-	tripDays%=365;
 	
 	//With new point we need to update all the statistics.
 	updateSpeeds();
@@ -213,10 +223,9 @@ void odometer::setWheelSize(double wheelSize){
 //Just got another data point, update all the statistics
 void odometer::updateSpeeds(){
 	//Update current speed
-	unsigned int sum=0;
+	double sum=0.0;
 	for (volatile int i=0; i<10; i++){
-		sum += dataPoints[i];
-		
+		sum += dataPoints[i];	
 	}
 	//Everyting is good up until this calculation.
 	currentSpeed=10.0*SECONDS_IN_HOUR*wheelSize/(sum*TIMER1_CLOCK_sec);		//calculate and update currentSpeed.
@@ -258,6 +267,10 @@ unsigned int odometer::getStartDays(){
 
 unsigned int odometer::getStartYear(){
 	return sYear;
+}
+
+unsigned int odometer::getSecondsElapsed(){
+	return tripSeconds;
 }
 
 unsigned int odometer::getMinutesElapsed(){
