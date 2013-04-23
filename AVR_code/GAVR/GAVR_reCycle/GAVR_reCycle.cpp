@@ -62,6 +62,7 @@
 |				  the vector class would not keep the data after being allocated. There are currently 20 available slots for trip data
 |				  from the usb. This can be expanded, but the timeout for receiving from the bone also needs to be expanded in that case. Currently
 |				  only two trips can be transmitted withoutu a timeout occuring. All Bone<->GAVR functions work using the debugging. Good.
+|			  4/22-	Added killHRSensing() and changed how the HR is triggered. Timer0 isn't even on unless the second hits %7, then it will go into action.
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -172,6 +173,7 @@ void AppInit(unsigned int ubrr);
 void EnableRTCTimer();
 void Wait_sec(unsigned int delay);
 void initHRSensing();
+void killHRSensing();
 void initSpeedSensing();
 WORD GetADC();
 
@@ -345,20 +347,13 @@ ISR(INT7_vect){
 /************************************************************************/
 ISR(TIMER0_COMPA_vect){
 	cli(); 
-	static BOOL flagGettingHR=fFalse;
 	static WORD location=0;
-	//Take a reading every 10 seconds.
-	if (currentTime.getSeconds()%10==0 && !flagGettingHR){
-		flagGettingHR=fTrue;
-	} 
-	if (flagGettingHR){
-		//Declare variables
-		WORD signal=0;
-		//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
-		signal = GetADC();		//retrieves ADC reading on ADC0
-		HRSAMPLES[location++]=signal;
-		if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300); flagGettingHR=fFalse;}
-	}//end if getting HR.
+	//Declare variables
+	WORD signal=0;
+	//Increment N (time should reflect number of ms between timer interrupts), get ADC reading, see if newSample is good for anything.
+	signal = GetADC();		//retrieves ADC reading on ADC0
+	HRSAMPLES[location++]=signal;
+	if (location >= 300){location=0; globalTrip.calculateHR(HRSAMPLES, 300); killHRSensing();}
 	//Re-enable interrupts
 	sei();
 }
@@ -380,6 +375,7 @@ ISR(TIMER2_OVF_vect){
 	prtDEBUGled2 ^= (1 << bnDBG10);
 	
 	if (currentTime.getSeconds()%10==0){flagShowStats=fTrue;}
+	if (currentTime.getSeconds()%7==0){initHRSensing();}
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
 	globalTrip.addTripSecond();
@@ -998,6 +994,17 @@ void initHRSensing(){
 	OCR0A = ONE_MS*NUM_MS;				//Number of Milliseconds
 	TCNT0 = 0x00;						//Initialize
 	TIMSK0 = (1 << OCIE0A);				//enable OCIE2A
+}
+/*************************************************************************************************************/
+void killHRSensing(){
+	cli();
+	TCCR0A=0x00;
+	TCCR0B=0x00;
+	OCR0A=0x00;
+	TCNT=0x00;
+	TIMSK0=0x00;
+	PRR0 |= (1 << PRTIM0);
+	sei();
 }
 /*************************************************************************************************************/
 WORD GetADC(){
