@@ -33,9 +33,7 @@
 #include <string.h>
 #include "stdtypes.h"
 
-#define UPWARD_SLOPE_MINIMUM 10
-#define DOWNWARD_SLOPE_MINUMUM 10
-#define SEC_PER_SAMPLE .008
+#define SEC_PER_SAMPLE .007
 
 #define __calculateHRWeight() hrWeight=(numReadings_L-1)/(numReadings_L);
 
@@ -65,6 +63,7 @@ class heartMonitor{
 		double aveHR, currentHR, hrWeight;
 		unsigned int numReadings_L, numReadings_H;
 		void softResetHR();
+		WORD lastDifference;
 		
 };
 
@@ -75,6 +74,7 @@ heartMonitor::heartMonitor(){
 //Resets everythin
 void heartMonitor::hardResetHR(){
 	currentHR=0;
+	lastDifference=0;
 	numReadings_L=0;
 	numReadings_H=0;
 	aveHR=0;
@@ -84,6 +84,7 @@ void heartMonitor::hardResetHR(){
 //Resets everything except AVEHR and Num readings.
 void heartMonitor::softResetHR(){
 	currentHR=0;
+	lastDifference=0;
 	__calculateHRWeight();
 }
 
@@ -112,22 +113,24 @@ unsigned int heartMonitor::getHRReadingsHigh(){
 
 void heartMonitor::calculateHR(WORD *samples, int size){
 	//Search for max and min values in entire array.
-	volatile WORD currentMax=0, currentMax2=0;
-	volatile BYTE placeOfAbsMax=0, placeOfAbsMax2=0;
-	
-	/*Debugging
-	for (int i=0; i< size; i+=3){
+	WORD currentMax=0, currentMax2=0;
+	BYTE placeOfAbsMax=0, placeOfAbsMax2=0;
+	double sum=0;
+	/*Debugging*//*
+	for (int i=0; i< size; i+=2){
 		char tempString[10];
 		utoa(samples[i],tempString,10);
 		tempString[9]='\0';
 		tempString[8]='-';
-		PutUart0Ch('-');
-		Print0(tempString);
+		PutUartChBone2('-');
+		PrintBone2(tempString);
 	}	*/
 	
 	
 	//Find the absolute maximum in the data
 	for (int i=0; i< size/2; i++){
+		sum+=samples[i];
+		sum+=samples[i+(size/2)];
 		if (samples[i]>currentMax){
 			currentMax=samples[i];
 			placeOfAbsMax=i;
@@ -139,92 +142,126 @@ void heartMonitor::calculateHR(WORD *samples, int size){
 	}
 	unsigned int peak= (currentMax >= currentMax2) ? currentMax: currentMax2;
 	placeOfAbsMax= (currentMax >= currentMax2)? placeOfAbsMax : placeOfAbsMax2;
+	WORD average=sum/size;
 	
-	/*Debugging
+	/*Debugging*//*
 	char absMaxString[10];
 	utoa(peak,absMaxString,10);
 	absMaxString[9]='\0';
 	absMaxString[9]='.';
-	Print0("abs max=");
-	Print0(absMaxString);*/
+	PrintBone2("abs max=");
+	PrintBone2(absMaxString);
+	char aveString[10];
+	utoa(average,aveString,10);
+	PrintBone2("Ave data=");
+	PrintBone2(aveString);*/
 	
+	unsigned int placement=placeOfAbsMax, localMax=0,goingDown=0;
+	BOOL flagFound=fFalse;
 	
-	//Find local maxima's
-	volatile WORD currentHigh=0;
-	volatile int currentHighPlace=0;
-	volatile BYTE downwardSlope=0, upwardSlope=0;
-	volatile BOOL flagGotBeat=fFalse;
-	volatile int place=0;	
-	
-	//If absolute max was in the first 2/3 ish, start there and go up, if we don't find something then go forward.
-	if (placeOfAbsMax < (size/2)){
-		place=placeOfAbsMax+15;	//start 5 above current place
-		//Loop through the rest of the array 20 things at a time, find the absolute maximum in that 20. If 4/6 to the left are smaller and 4/6 to the right are smaller, call that a peak.
-		for (int i=place; i < size; i+=5){
-			currentHigh=samples[i];
-			for (int j=i; j<(i+30); j++){
-				//Find maximum. 
-				if (samples[j] >=currentHigh){
-					samples[j]=currentHigh;
-					currentHighPlace=j;
-				}
-			}
-			for (int k=currentHighPlace-15; k <= currentHighPlace+15; k++){
-				if (k<currentHighPlace && samples[currentHighPlace] < samples[k]){upwardSlope++;}
-				if (k>=currentHighPlace && samples[currentHighPlace] >= samples[k]){downwardSlope++;}
-			}
-			if (downwardSlope > DOWNWARD_SLOPE_MINUMUM && upwardSlope > UPWARD_SLOPE_MINIMUM){flagGotBeat=fTrue; break;}
-			else {upwardSlope=0; downwardSlope=0; flagGotBeat=fFalse;}	//do nothing, go into next 20 things.
-		} //end for
-	
-	//If maximum was at the end of the sample OR we didn't find a local maxima in the lower bit of the data
-	} else if (placeOfAbsMax >= (size/2) && !flagGotBeat){
-		place=placeOfAbsMax-15;
-		upwardSlope=0;
-		downwardSlope=0;
-		for (int i=place; i>0; i-= 5){
-			currentHigh=samples[i];
-			for (int j=i; j > (i-30); j--){
-				if (samples[j] >= currentHigh){
-					currentHigh=samples[j];
-					currentHighPlace=j;
-				}
-			}
-			for (int k=currentHighPlace+15; k > currentHighPlace-15; k--){
-				if (k>=currentHighPlace && samples[currentHighPlace] >= samples[k]){upwardSlope++;}
-				if (k<currentHighPlace && samples[currentHighPlace] <= samples[k]){downwardSlope++;}
-			}
-			if (downwardSlope > DOWNWARD_SLOPE_MINUMUM && upwardSlope > UPWARD_SLOPE_MINIMUM){flagGotBeat=fTrue; break;}	
-			else {upwardSlope=0; downwardSlope=0; flagGotBeat=fFalse;}		
+	//If abve the 200 mark, go downwards.
+	if (placement > 200){
+		if (currentHR>20 && currentHR<200){
+			placement-=(lastDifference*5/8);
 		}
-	}//end if placeOfAbsMax > 100
-
-	
-	if (flagGotBeat){
-		/*Debugging
-		char distanceString[5];
-		volatile int hmm=abs(placeOfAbsMax-currentHighPlace);
-		utoa(hmm, distanceString,10);
-		distanceString[4]='\0';
-		Print0("d=");
-		Print0(distanceString);*/
-		float sampleTimeDifference=abs(placeOfAbsMax-currentHighPlace)*SEC_PER_SAMPLE;
-		currentHR=60.0/sampleTimeDifference;
-		//if (++numReadings_L>=65534){numReadings_H++;numReadings_L=0;}
-		numReadings_L++;
-		if (numReadings_L==65534){numReadings_L=0;}
-		__calculateHRWeight();
-		aveHR=(aveHR*hrWeight)+(currentHR/numReadings_L);	
+		else {
+			placement-=30;
+		}
+		localMax=placement;
+		for (placement > 0; placement--;){
+			if (samples[placement] >= (average + (samples[currentMax]-average)*(3/4))){
+				//should be near a max, look for the max, if we see three decrementing numbers, assume that was th emaximum
+				if (samples[placement] >=samples[localMax]){
+					localMax=placement;
+				} else if ((samples[placement] < samples[placement+1]) && (samples[placement] < samples[localMax])){
+					goingDown++;
+					if (goingDown>3){flagFound=fTrue;break;}
+				} else{
+				//	cout << "Saw upward slope, reset..." << endl;
+					goingDown=0;
+				}
+			}//end if above average
+			else;	//do nothing, keep looping until you find it.
+		}//end for.
+		if (flagFound){
+			//PrintBone2("Found a local max down.");
+		} else {
+			//PrintBone2("Didn't find a local max down.");
+		}//end if FlagFound
+	} 
+	//If we didn't find it or the placement is below 200, look forwards.
+	if (placeOfAbsMax < 200 || !flagFound){
+		placement=placeOfAbsMax;
+		if (currentHR>20 && currentHR<200){
+			placement+=(lastDifference*5/8);
+		}
+		else {
+			placement+=30;
+		}
+		localMax=placement;
+		for (placement < 300; placement++;){
+			if (samples[placement] >= (average + (samples[currentMax]-average)*(3/4))){
+				//should be near a max, look for the max, if we see three decrementing numbers, assume that was th emaximum
+				if (samples[placement] >= samples[localMax]){
+						localMax=placement;
+				} else if ((samples[placement] < samples[placement-1]) && (samples[placement] < samples[localMax])){
+					goingDown++;
+					//cout << "Saw downward slope." << endl;
+					if (goingDown>3){flagFound=fTrue;break;}
+				} else{
+					//cout << "Saw upward slope, reset..." << endl;
+					goingDown=0;
+				}
+			}//end if above average
+			else;	//do nothing, keep looping until you find it.
+		}//end for.
+		if (flagFound){
+			//PrintBone2("Found a local max up.");	
+		} else {
+			lastDifference=0;
+			//PrintBone2("Didn't find a max up.");
+			currentHR=0;
+		}//end if FlagFound
 		
+	}//end if-else placement<200
+	
+	//If the absolute max is less than 30 above the samples, there is no heart rate.
+	if ((peak-(WORD)average) < 23){
+		currentHR=0.0;
 	} else {
-		volatile static unsigned int numZeros=0;
-		numZeros++;
-		if (numZeros>3){currentHR=0;numZeros=0;}
-	}
-	/*Debugging
-	volatile static int counter=0;
-	if (counter++>5){
-		flagUpdateUserStats=fTrue;
-		counter=0;
-	}	*/
+		if (flagFound){
+			double lastHR=currentHR;
+			BYTE weighting=1;
+			lastDifference=abs(localMax-placeOfAbsMax);
+			float sampleTimeDifference=lastDifference*SEC_PER_SAMPLE;
+			currentHR=60.0/sampleTimeDifference;
+			WORD differenceInHR=abs((WORD)lastHR - (WORD)currentHR);
+			if (differenceInHR < 10){
+				weighting=2;
+			} else if (differenceInHR >=10 && differenceInHR <20){		//if it's a big jump, don't let it go too far.
+				weighting=5;
+			} else if (differenceInHR >=20 && differenceInHR < 40){
+				weighting=8;
+			} else {											//If it's crazy off, let it jump
+				weighting=1;
+			}	
+			//Calculate the new HR
+			if (currentHR>lastHR){
+				currentHR=lastHR+(differenceInHR/weighting);
+			} else {
+				currentHR=lastHR-(differenceInHR/weighting);
+			}//end if lastHR<currentHR else		
+			
+			//Calculate the new Average HR
+			if (numReadings_L<=65534 && currentHR<200 && currentHR>20){
+				numReadings_L++;
+			}
+			if (currentHR<200 && currentHR>20){
+				aveHR=(aveHR*(numReadings_L-1)+currentHR)/(numReadings_L);
+			} else {currentHR=0.0;}	
+						
+		}//end if flag found
+		else {currentHR=0.0;}//end if-else flagFound
+	}//end if-else
+	
 }

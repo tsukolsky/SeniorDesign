@@ -162,8 +162,8 @@ using namespace std;
 #define CALC_SPEED_THRESH	3				//at 20MPH, 4 interrupts take 1 second w/clk, should be at least every second
 #define MINIMUM_HR_THRESH	350				//
 #define MAXIMUM_HR_THRESH	800				//seen in testing it usually doesn't go more than 100 above or below 512 ~ 1.67V
-#define NUM_MS				4				//4 ms
-#define ONE_MS				0x20			//32 ticks on 8MHz/256 is 1ms
+#define NUM_MS				7				//7 ms
+#define ONE_MS				0x20			//31.25 ticks on 8MHz/256 is 1ms
 
 /*****************************************/
 /**			Foward Declarations			**/
@@ -239,7 +239,7 @@ WORD HRSAMPLES[300];				//Array of HR Samples passed to the hrMonitor.h class.
 WORD numberOfSpeedOverflows=0;		//How many times the counter has overflowed for the reed switch. 
 BOOL flagNoSpeed=fFalse;			//Whether or not there is a default of NO speed right now.
 BOOL flagShowStats=fFalse;			//Whether we should show the statistics of the biker, debug
-WORD numberOfGAVRtrips=0;			//Represents how many trips are stored in EEPROM +1
+WORD numberOfGAVRtrips=1;			//Represents how many trips are stored in EEPROM +1
 int whichTripToOffload=-1, whichUSBtripToDelete=-1,whichGAVRtripToDelete=-1;
 unsigned int daysInMonth[12]={31,28,31,30,31,30,31,31,30,31,30,31};
 
@@ -327,7 +327,7 @@ ISR(INT6_vect){
 		flagNoSpeed=fFalse;
 		globalTrip.resetSpeedPoints();
 	}//end if no speed.
-	if (((value > 3000 && numberOfSpeedOverflows==0)|| numberOfSpeedOverflows>0) && !flagNoSpeed){
+	if (((value > 2000 && numberOfSpeedOverflows==0)|| numberOfSpeedOverflows>0) && !flagNoSpeed){
 		prtDEBUGled |= (1 << bnDBG1);
 		globalTrip.addSpeedDataPoint(value+numberOfSpeedOverflows*TIMER1_OFFSET);
 		numberOfSpeedOverflows=0;	
@@ -375,15 +375,15 @@ ISR(TIMER2_OVF_vect){
 	prtDEBUGled2 ^= (1 << bnDBG10);
 	
 	if (currentTime.getSeconds()%10==0){flagShowStats=fTrue;}
-	if (currentTime.getSeconds()%7==0){initHRSensing();}
+	if (currentTime.getSeconds()%9==0){initHRSensing();}
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
 	globalTrip.addTripSecond();
 	//Timeout functionality
 			
 	//UART0/Bone Trips Send timeout
-	if (BONEtimeout <= COMM_TIMEOUT_SEC && (flagReceiveBone || flagWaitingForBone)){BONEtimeout++;}	
-	else if (BONEtimeout > COMM_TIMEOUT_SEC && (flagReceiveBone || flagWaitingForBone)){BONEtimeout=0; flagReceiveBone=fFalse; flagWaitingForBone=fFalse; __enableCommINT();}
+	if (BONEtimeout <= COMM_TIMEOUT_SEC*2 && (flagReceiveBone || flagWaitingForBone)){BONEtimeout++;}	
+	else if (BONEtimeout > COMM_TIMEOUT_SEC*2 && (flagReceiveBone || flagWaitingForBone)){BONEtimeout=0; flagReceiveBone=fFalse; flagWaitingForBone=fFalse; __enableCommINT();}
 	else if (!flagReceiveBone && !flagWaitingForBone && BONEtimeout >0){BONEtimeout=0;}
 	else;
 	
@@ -510,7 +510,6 @@ int main(void)
 		/* Debugging/PRE-LCD functionality. Prints every 10 seconds */
 		if (flagShowStats && !flagWaitingForBone && !flagWaitingForWAVR && !flagReceiveBone && !flagReceiveWAVR && !flagReceiveBone2 && !flagWaitingForBone2 && !flagQUIT){
 			cli();
-			flagShowStats=fFalse;
 			//Put together a time string.
 			char timeString[40];
 			strcpy(timeString,currentTime.getTime());
@@ -520,7 +519,7 @@ int main(void)
 			//Get other values to print
 			double speed=globalTrip.getCurrentSpeed();
 			double aveSpeed=globalTrip.getAverageSpeed();
-			double distance=globalTrip.getDistance();
+			double distance=globalTrip.getDistance(); 
 			double currentHR=globalTrip.getCurrentHR();
 			double averageHR=globalTrip.getAveHR();
 			WORD sdays=globalTrip.getStartDays();
@@ -528,7 +527,8 @@ int main(void)
 			WORD minElapsed= globalTrip.getMinutesElapsed();
 			WORD dayElapsed=globalTrip.getDaysElapsed();
 			WORD yearElapsed=globalTrip.getYearsElapsed();
-			char speedString[8],aveSpeedString[8],distanceString[8],currentHRstring[8],aveHRstring[8], startString[9],yearString[5], timeLapseString[10];
+			char speedString[8],aveSpeedString[8],distanceString[8], startString[9],yearString[5], timeLapseString[10];
+			char currentHRstring[8],aveHRstring[8];
 			//Turn doubles and ints into strings.
 			dtostrf(speed,5,3,speedString);
 			dtostrf(aveSpeed,5,3,aveSpeedString);
@@ -987,6 +987,12 @@ void initSpeedSensing(){
 }
 /*************************************************************************************************************/
 void initHRSensing(){
+	//Get ADC ready
+	PRR0 &= ~(1 << PRADC);					//Enable the ADC power
+	ADCSRA |= (1 << ADEN)|(1 << ADPS1);		//enable ADC with clock division factor of 8
+	ADMUX |= (1 << REFS0)|(1 << MUX2);
+	ADCSRB |= (1 << MUX5);					//100100 is ADC 12, mux 5:0
+	
 	//Initialize timer 0, counter compare on TCNTA compare equals
 	PRR0 &= ~(1 << PRTIM0);
 	TCCR0A = (1 << WGM01);				//OCRA good, TOV set on top. TCNT2 cleared when match occurs
@@ -998,10 +1004,17 @@ void initHRSensing(){
 /*************************************************************************************************************/
 void killHRSensing(){
 	cli();
+	//Kill ADC
+	ADCSRA=0x00;
+	ADMUX=0x00;
+	ADCSRB=0x00;
+	PRR0 |= (1 << PRADC);
+	
+	//Kill timer
 	TCCR0A=0x00;
 	TCCR0B=0x00;
 	OCR0A=0x00;
-	TCNT=0x00;
+	TCNT0=0x00;
 	TIMSK0=0x00;
 	PRR0 |= (1 << PRTIM0);
 	sei();
@@ -1009,19 +1022,15 @@ void killHRSensing(){
 /*************************************************************************************************************/
 WORD GetADC(){
 	volatile WORD ADCreading=0;
-
 	
-	//Take two ADC readings, throw the first one out.
-	for (int i=0; i<2; i++){ADCSRA |= (1 << ADSC); while(ADCSRA & (1 << ADSC));}
+	//Start/Take ADC reading, wait for it to be over.
+	ADCSRA |= (1 << ADSC); 
+	while(ADCSRA & (1 << ADSC));
 	
 	//Get the last ADC reading.	
 	ADCreading = ADCL;
 	ADCreading |= (ADCH << 8);
 	
-/*	if (reps++>500){
-		flagUpdateUserStats=fTrue;
-		reps=0;
-	}*/
 	/*****Debugging******
 	volatile static WORD reps=0;
 	if (reps++>2){

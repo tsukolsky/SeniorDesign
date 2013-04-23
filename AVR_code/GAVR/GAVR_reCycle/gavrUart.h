@@ -60,7 +60,7 @@
 //Declare external flags, clock and trip.
 extern BOOL flagReceiveWAVR, flagReceiveBone, flagReceiveBone2, flagSendWAVR, flagSendBone, flagGetUserClock, flagWAVRtime, flagGetWAVRtime,justStarted;
 extern BOOL flagInvalidDateTime, flagNewTripStartup, flagUpdateWAVRtime,flagWaitingForWAVR, flagTripOver;
-extern BOOL flagOffloadTrip, flagNeedTrips, flagDeleteUSBTrip, flagDeleteGAVRTrip, flagHaveUSBTrips, flagViewGAVRtrips, flagViewUSBTrips;
+extern BOOL flagOffloadTrip, flagNeedTrips, flagDeleteUSBTrip, flagDeleteGAVRTrip, flagHaveUSBTrips, flagViewGAVRtrips, flagViewUSBTrips, flagUSBinserted;
 extern myTime currentTime;
 extern trip globalTrip;
 //extern myVector<char *> USBtripsViewer;
@@ -474,13 +474,17 @@ void ReceiveBone2(){
 					tempString[0]=recString[1];
 					tempString[1]='\0';
 					whichTripToOffload=atoi(tempString);
-					if (whichTripToOffload>0 && whichTripToOffload<=numberOfGAVRtrips){
+					if (whichTripToOffload>0 && whichTripToOffload<=numberOfGAVRtrips&& flagUSBinserted){
 						flagOffloadTrip=fTrue;
 					}else{
 						flagOffloadTrip=fFalse;
 						whichTripToOffload=-1;
-						PrintBone2("No trip with that number.");
-						PrintBone2(tempString);
+						if (flagUSBinserted){
+							PrintBone2("No trip with that number.");
+							PrintBone2(tempString);
+						} else {
+							PrintBone2("Insert USB please.");
+						}						
 					}//end if valid trip.
 					state=4;
 				/********************************************delete USB/GAVR trip*********************************/
@@ -490,13 +494,17 @@ void ReceiveBone2(){
 						tempString[0]=recString[2];
 						tempString[1]='\0';						
 						whichUSBtripToDelete=atoi(tempString);
-						if (whichUSBtripToDelete<5 && whichUSBtripToDelete >0){
+						if (whichUSBtripToDelete<5 && whichUSBtripToDelete >0 && flagUSBinserted){
 							flagDeleteUSBTrip=fTrue;
 							PrintBone2(recString);
 						} else {
 							flagDeleteUSBTrip=fFalse;
 							whichUSBtripToDelete=-1;
-							PrintBone2("Invalid USB trip.");
+							if (flagUSBinserted){
+								PrintBone2("Invalid USB trip.");
+							} else {
+								PrintBone2("Insert USB.");
+							}							
 						}//end if-else valid number
 					} else if (recString[1]=='g'){
 						char *tempString;
@@ -542,7 +550,7 @@ void ReceiveBone2(){
 /*************************************************************************************************************/
 void ReceiveBone(){
 	char recChar, recString[40];
-	BYTE state=0, strLoc=0;
+	BYTE state=0, strLoc=0, tripsBeforeReceive=numberOfUSBTrips;
 	BOOL noCarriage=fTrue;
 
 	/*****************************************State Machine Explained************************************************/
@@ -583,7 +591,19 @@ void ReceiveBone(){
 				}//end case 1
 			case 2:{
 				if (recString[0]=='T'){state=3;}					//getting a trip, store the data.
-				else if (!strncmp(recString,"D.",2)){PrintBone2("Got all trips.");flagHaveUSBTrips=fTrue;state=4;}					//exit
+				else if (!strncmp(recString,"D.",2)){
+					if (numberOfUSBTrips>0){
+						PrintBone2("Got all trips.");
+						flagHaveUSBTrips=fTrue;
+						flagNeedTrips=fFalse;
+					} else {
+						flagHaveUSBTrips=fFalse;
+						flagNeedTrips=fFalse;
+						flagViewUSBTrips=fFalse;
+						PrintBone2("NO USB TRIPS on stick. Offload or manually put on.");
+					}					
+					state=4;
+				}					//exit
 				else if (!strncmp(recString,"E.",2)){flagHaveUSBTrips=fFalse;state=4;}
 				else {state=5;}									//Error case
 				break;
@@ -591,7 +611,7 @@ void ReceiveBone(){
 			case 3:{
 				PrintBone2("Getting trips...");
 				//Store trip data in something. Need to add error check on whether we already loaded the trip data.
-				if (!flagHaveUSBTrips ){
+				if (!flagHaveUSBTrips&& tripsBeforeReceive==0){
 					PrintBone2("Got ");
 					PrintBone2(recString);
 					strcpy(actualTrips[numberOfUSBTrips++],recString);//might need to be character by character.
@@ -621,6 +641,7 @@ void ReceiveBone(){
 				//clear out the USBtripsViewer vector
 				PrintBone2("Clearing trips...");
 				numberOfUSBTrips=0;
+				tripsBeforeReceive=0;
 				flagHaveUSBTrips=fFalse;			//say we don't have USBtrips, go back to state 3 to push first one on vector
 				state=3;
 				break;
@@ -774,12 +795,13 @@ void SendBone(BYTE whichTrip){
 			}
 			case 9:{
 				if (!strncmp(recString,"A.",2)){state=10;}						//If initial ACK, go tell it which to delete, then exit
-				else if (!strncmp(recString,"DU",2)){state=5;flagDeleteUSBTrip=fFalse;}				//If we got what we sent, go exit without Error.
-				else {state=6;}													//If there was an error, exit the correct way.
+				else if (!strncmp(recString,"DU",2)){PrintBone2("Got DU");state=5;flagDeleteUSBTrip=fFalse;}				//If we got what we sent, go exit without Error.
+				else {PrintBone2("Wrong ACK."); PrintBone2(recString);state=6;}													//If there was an error, exit the correct way.
 				break;
 			}
 			//
 			case 10:{
+				PrintBone2("Got ACK.");
 				char tempChar[5];
 				utoa(whichTrip,tempChar,10);
 				strcpy(sendString,"DU");
@@ -814,11 +836,12 @@ void SendBone(BYTE whichTrip){
 			}//end case 12
 			case 13:{
 				if (!strncmp(recString,"A.",2)){state=14;}
-				else if (!strncmp(recString,"ST.",3)){state=5; flagTripOver=fFalse;}
-				else {state=6;}
+				else if (!strncmp(recString,"ST.",3)){PrintBone2("Got ST.");state=5; flagTripOver=fFalse;}
+				else {PrintBone2("Got "); PrintBone2(recString);state=6;}
 				break;
 			}//end case 13
 			case 14:{
+				PrintBone2("Got A.");
 				PrintBone("ST.");
 				state=1;													//Go back to receive state.
 				for (int i=0; i<strLoc; i++){recString[i]=NULL;}
