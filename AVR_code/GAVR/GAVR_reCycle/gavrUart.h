@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 3/3/2013
-| Last Revised: 4/22/2013
+| Last Revised: 4/23/2013
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team ReCycle, 2013
 |================================================================================
 | Description: This file conatians the uart protocols for the Graphics AVR
@@ -44,6 +44,8 @@
 |				 routines to work with the BeagleBone and send trip, receive trip, delete trip data on the GAVR, Bone and USB.
 |				 The routines have been finalized today. Note PrintBone2 should not be used once the LCD screen is running, it is solely
 |				 a debugging port. 
+|			4/23- Added small tweaks to ReceiveBone2 functionality to dissallow involuntary ask and receives from the BeagleBone. Example, if no USB
+|				 is inserted, it tells the user that there isn't one and there needs to be.
 |================================================================================
 | Revisions Needed:
 |		4/7: ReceiveBone2() needs to be completed.|

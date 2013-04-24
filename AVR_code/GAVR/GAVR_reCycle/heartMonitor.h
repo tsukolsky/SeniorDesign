@@ -3,7 +3,7 @@
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 2/28/2013
-| Last Revised: 4/14/2013
+| Last Revised: 4/23/2013
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is a heartMonitor class that is used in the GAVR module. Used
@@ -23,6 +23,13 @@
 |			  4/7:  Changed some declarations and added some get functions for resetting trip 
 |					datas and such.
 |			  4/14: Trying new peak detection...
+|			  4/23: Implmeneted new peak detection. Looks for downard slope from a point of the absolute maximum
+|					Has some dynamic features such as offset to look. If it sees a quick heart beat, then a slow,
+|					will keep the previous until it verifies this. Another optoin is to find multiple peaks if possible.
+|					Most of the time the peaks come around the same level given such a small sampling time, better recognition
+|					of peaks can be done more effectively. The system does work however, and is accurate to within 4 beats
+|					when it recognizes a heart beat consistently. In other words, when it gets a heart rate over adn over, it's
+|					the right one, however when it gets the wrong heart rate it changes often. Also changed how average speed operates.
 |================================================================================
 | *NOTES: HR is on a linear model, not polynomially biased with extra weighting
 \*******************************************************************************/

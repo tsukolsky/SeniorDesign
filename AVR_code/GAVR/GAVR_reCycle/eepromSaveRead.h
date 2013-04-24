@@ -65,11 +65,11 @@ extern WORD numberOfGAVRtrips;
 #define WHEEL_SIZE			30		//goes to {33,30}
 
 //EEPROM variables, allocated at location 0 and then up from there. hour=0, minute=1, second=2, month=3, day=5, year=6-7=> total offset is 9 or 10, going for 20 just in case. Covering the buttocks
-BYTE EEMEM eeHour = 5;						//location 0
-BYTE EEMEM eeMinute = 15;					//location 1
+BYTE EEMEM eeHour = 6;						//location 0
+BYTE EEMEM eeMinute = 52;					//location 1
 BYTE EEMEM eeSecond = 10;					//location 2
 BYTE EEMEM eeMonth = 4;						//location 3
-BYTE EEMEM eeDay = 1;						//location 4
+BYTE EEMEM eeDay = 23;						//location 4
 WORD EEMEM eeYear = 2013;					//location {6,5}
 BYTE EEMEM eeTripFinished = 1;				//location 7 
 BYTE EEMEM eeNumberOfTrips = 1;				//location 8. Always one trip...

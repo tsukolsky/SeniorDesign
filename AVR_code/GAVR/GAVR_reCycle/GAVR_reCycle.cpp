@@ -2,7 +2,7 @@
 | GAVR_reCycle.cpp
 | Author: Todd Sukolsky
 | Initial Build: 2/12/2013
-| Last Revised: 4/22/13
+| Last Revised: 4/23/13
 | Copyright of Todd Sukolsky and Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main .cpp for the Graphics AVR for the Bike Computer
@@ -62,7 +62,11 @@
 |				  the vector class would not keep the data after being allocated. There are currently 20 available slots for trip data
 |				  from the usb. This can be expanded, but the timeout for receiving from the bone also needs to be expanded in that case. Currently
 |				  only two trips can be transmitted withoutu a timeout occuring. All Bone<->GAVR functions work using the debugging. Good.
-|			  4/22-	Added killHRSensing() and changed how the HR is triggered. Timer0 isn't even on unless the second hits %7, then it will go into action.
+|			4/22- Added killHRSensing() and changed how the HR is triggered. Timer0 isn't even on unless the second hits %7, then it will go into action.
+|			4/23- Added HR Sensing which now works. Not completely acccurate all the time, however the next step is to implement Fourier transforms to find 
+|				  actual heart rate. This is not easy and will be done over the next few weeks in the folder HR_TEST using a difference microcontroller.
+|				  Successful testing, all bone trips work. Now there is initialization scripts that work correctly when the Bone is configured. All that
+|				  is now needed is the LCD functionality and PC software (which Jiwon has dissapeared from).
 |================================================================================
 | Revisions Needed:
 |			(1)3/27-- For timeouts on sending procedures (SendWAVR, SendBone), if a timeout
@@ -331,6 +335,7 @@ ISR(INT6_vect){
 		prtDEBUGled |= (1 << bnDBG1);
 		globalTrip.addSpeedDataPoint(value+numberOfSpeedOverflows*TIMER1_OFFSET);
 		numberOfSpeedOverflows=0;	
+		Wait_ms(10);
 		prtDEBUGled &= ~(1 << bnDBG1);
 	} else;		//was a repeat/low value, not valid. Go forward.
 	TCNT1=0x00;
@@ -375,7 +380,7 @@ ISR(TIMER2_OVF_vect){
 	prtDEBUGled2 ^= (1 << bnDBG10);
 	
 	if (currentTime.getSeconds()%10==0){flagShowStats=fTrue;}
-	if (currentTime.getSeconds()%9==0){initHRSensing();}
+	if (currentTime.getSeconds()%5==0){initHRSensing();}
 	//volatile static int timeOut = 0;
 	currentTime.addSeconds(1);
 	globalTrip.addTripSecond();
@@ -436,7 +441,6 @@ int main(void)
 	EnableRTCTimer();	//RTC
 	getDateTime_eeprom(fTrue,fTrue);	//Get last saved date and time.
 	initSpeedSensing();
-//	initHRSensing();
 	//Check the trip datas to see if there is something going on.
 	flagNewTripStartup=StartupTripEEPROM();		//If a new trip is needed, calls it. Otherwise is loads a new one. True means a new one started.
 	Wait_sec(2);
