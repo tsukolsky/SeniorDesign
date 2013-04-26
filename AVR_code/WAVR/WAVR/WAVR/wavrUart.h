@@ -1,5 +1,5 @@
 /*******************************************************************************\
-| myUart.h
+| wavrUart.h
 | Author: Todd Sukolsky
 | ID: U50387016
 | Initial Build: 3/3/2013
@@ -39,7 +39,7 @@
 |				  write/implement the Trip protocol and BeagleBone UART protocol and BeagleBone Python code; then move on 
 |				  to this debugging. (2) Changed messages to shorter lengths, example "ACKBAD." is now "B." and "ACK." is now
 |				  "A.". Shortens time needed allowing for cleaner communications.
-|		    	4/13: Fixed race condition when the WAVR AND/OR GAVR tries to send the Time and Date, but the memory doesn't actually
+|		    4/13: Fixed race condition when the WAVR AND/OR GAVR tries to send the Time and Date, but the memory doesn't actually
 |				contain anything, happens sometimes on shorts. Implemented in SendGAVR and ReceiveGAVR.
 |================================================================================
 | Revisions Needed: (1) OPTIONAL-Add "ACKBAD" case in ReceiveGAVR()

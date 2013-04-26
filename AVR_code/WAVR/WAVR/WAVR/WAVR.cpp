@@ -2,7 +2,7 @@
 | WAVR.cpp
 | Author: Todd Sukolsky
 | Initial Build: 1/28/2013
-| Last Revised: 4/6/13
+| Last Revised: 4/18/13
 | Copyright of Boston University ECE Senior Design Team Re.Cycle, 2013
 |================================================================================
 | Description: This is the main.cpp file for the RTC to be implemented on the 
