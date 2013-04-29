@@ -1,0 +1,30 @@
+#!/usr/bin/python
+import optparse
+import os
+import sys
+
+##OPTPARSER INFO
+inputString=''
+askUser=False
+
+use = "Usage: %prog [options] <arguments>. String entered must have '.' to terminate."
+parser = optparse.OptionParser(usage=use)
+parser.add_option('-s', dest='inString', help='String to be sent, real mode')
+parser.add_option('-d',action="store_true", dest="debug",default=False,help='User String for debug mode')
+
+(options, args) = parser.parse_args()
+
+
+if options.inString is None and options.debug is False:
+    askUser=False
+    inputString='NONE.'
+elif options.debug is True:
+    askUser=True
+else:
+    askUser=False
+    inputString=options.inString
+
+cmd="echo 'I am the child process and received the string:"+inputString+"' >> whatIGot.txt"
+os.system(cmd);
+
+exit(10)

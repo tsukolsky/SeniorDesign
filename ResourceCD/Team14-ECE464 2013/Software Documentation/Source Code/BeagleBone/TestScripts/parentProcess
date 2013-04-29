@@ -1,0 +1,11 @@
+#!/usr/bin/python
+
+import os
+import sys
+import subprocess
+
+stringToSend="Parent is talking to the child"
+print "\nHello, I am the main process, or parent as some would say\r"
+output=subprocess.call(["./childProcess","-s",stringToSend])
+print "Parent got childs output to be " + str(output) + "\n"
+exit(0)

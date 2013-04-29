@@ -1,0 +1,2 @@
+Inidividual Vendors need not be used. Parse the BOM file and allocate parts via Digikey. This was our method.
+The only vendor not included was the Pulse HR Monitor, LCD Screen, Reed switch and Generator.

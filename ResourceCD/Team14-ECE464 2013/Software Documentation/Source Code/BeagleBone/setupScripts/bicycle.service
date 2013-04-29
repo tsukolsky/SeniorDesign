@@ -1,0 +1,10 @@
+[UNIT]
+Description=Start Bicycle Statistics
+
+[Service]
+ExecStart=/usr/bin/firstCall
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+

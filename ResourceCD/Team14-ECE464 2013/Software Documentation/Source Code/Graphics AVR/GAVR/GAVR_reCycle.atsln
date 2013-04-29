@@ -1,0 +1,20 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Atmel Studio Solution File, Format Version 11.00
+Project("{E66E83B9-2572-4076-B26E-6BE79FF3018A}") = "GAVR_reCycle", "GAVR_reCycle\GAVR_reCycle.cppproj", "{F296B74D-7476-4A53-ADE3-81F98D2C752E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|AVR = Debug|AVR
+		Release|AVR = Release|AVR
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F296B74D-7476-4A53-ADE3-81F98D2C752E}.Debug|AVR.ActiveCfg = Debug|AVR
+		{F296B74D-7476-4A53-ADE3-81F98D2C752E}.Debug|AVR.Build.0 = Debug|AVR
+		{F296B74D-7476-4A53-ADE3-81F98D2C752E}.Release|AVR.ActiveCfg = Release|AVR
+		{F296B74D-7476-4A53-ADE3-81F98D2C752E}.Release|AVR.Build.0 = Release|AVR
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

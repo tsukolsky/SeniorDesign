@@ -1,0 +1,17 @@
+#!/bin/bash
+
+setupPath=/home/root/Documents/beagle-bone.git/setupScripts/
+gpsPath=/home/root/Documents/beagle-bone.git/NMEA
+
+##Call pin setup, start GPS piping
+$setupPath/pinSetup.sh
+$gpsPath/myGpsPipe.py &
+
+##Start watchdog scripts.
+$setupPath/gavrInterrupt &
+$setupPath/shutdownInterrupt &
+$setupPath/mountUSB.sh &
+
+echo "Finished setup" > /dev/kmsg
+exit
+

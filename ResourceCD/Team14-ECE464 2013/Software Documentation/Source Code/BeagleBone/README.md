@@ -1,0 +1,1 @@
+This folder contains implementation/testing files for the beaglebone. The bone is used in a senior design project for Boston University. For more information contact BU Electrical and Computer engineering, or www.bu.edu.
