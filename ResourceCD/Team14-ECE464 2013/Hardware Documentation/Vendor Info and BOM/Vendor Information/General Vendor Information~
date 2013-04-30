@@ -1,0 +1,3 @@
+Inidividual Vendors need not be used. Parse the BOM file and allocate parts via Digikey. This was our method.
+The Pulse HR Monitor, LCD Screen, and Generator vendors are located in seperate text files. The Reed Switch
+can be bought at most bike shops or online, just google "buy reed switch"
